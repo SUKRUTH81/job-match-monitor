@@ -17,9 +17,12 @@ import logging
 import os
 import random
 import re
+import smtplib
+import ssl
 import sys
 import time
 from datetime import datetime, timezone
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Set, Tuple
 from urllib.parse import quote_plus, urlparse
@@ -1079,6 +1082,62 @@ def create_github_issue(title: str, body: str) -> None:
         LOG.error("Failed to create GitHub Issue via gh CLI: %s", exc)
 
 
+DEFAULT_RECIPIENT = "akhilarohithayepuri@gmail.com"
+
+
+def build_email_html(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[str, Any]]) -> str:
+    run_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
+    return f"""<!doctype html><html><body style="font-family:Arial,sans-serif;color:#202124">
+    <h2>LinkedIn Job Match Monitor Report</h2>
+    <p>Run time: <b>{run_time}</b></p>
+    <p>Skill score = matching candidate skills ÷ distinct technical skills detected in the job title and description × 100.</p>
+    <h3>1. Jobs matching 60% or more ({len(matched)})</h3>
+    <p>Sorted by skill match percentage, highest first.</p>
+    {html_table(matched)}
+    <h3 style="margin-top:28px">2. All newly discovered jobs scraped ({len(all_scraped)})</h3>
+    <p>This table includes every new job collected in this run, including jobs below 60%. Sorted highest first.</p>
+    {html_table(all_scraped)}
+    <p style="font-size:11px;color:#666;margin-top:22px">Automated report. Verify job requirements and eligibility on the employer's application page.</p>
+    </body></html>"""
+
+
+def send_gmail(subject: str, html_body: str, attachment: Path | None = None) -> None:
+    sender = os.environ.get("GMAIL_ADDRESS", "").strip()
+    app_password = os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
+    recipient = os.environ.get("JOB_ALERT_TO", "").strip() or DEFAULT_RECIPIENT
+
+    if not sender or not app_password:
+        LOG.info("GMAIL_ADDRESS or GMAIL_APP_PASSWORD not set. Skipping Gmail delivery to %s.", recipient)
+        return
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg.set_content("Your email client does not support HTML. Please view this message in an HTML-capable client.")
+    msg.add_alternative(html_body, subtype="html")
+    if attachment and attachment.exists():
+        data = attachment.read_bytes()
+        msg.add_attachment(
+            data,
+            maintype="application",
+            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=attachment.name,
+        )
+
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
+            server.ehlo()
+            server.starttls(context=context)
+            server.ehlo()
+            server.login(sender, app_password)
+            server.send_message(msg)
+        LOG.info("Gmail match report successfully sent to %s", recipient)
+    except Exception as exc:
+        LOG.error("Failed to send email to %s: %s", recipient, exc)
+
+
 def create_excel(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[str, Any]]) -> Path:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
@@ -1166,12 +1225,15 @@ def main() -> int:
 
     # Always generate the report for new LinkedIn records; only 60%+ matches notify.
     report_path = create_excel(matched, all_scraped)
+    run_stamp = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %I:%M %p IST")
+    title = f"LinkedIn job matches: {len(matched)} at 60%+ | {run_stamp}"
     if not matched:
         LOG.info("New LinkedIn jobs were found, but none reached %d%%. Excel report created; no GitHub Issue.", args.min_match)
     else:
-        run_stamp = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %I:%M %p IST")
-        title = f"LinkedIn job matches: {len(matched)} at 60%+ | {run_stamp}"
         create_github_issue(title, build_github_issue_body(matched, all_scraped))
+
+    # Send email notification (to akhilarohithayepuri@gmail.com) with attached Excel report
+    send_gmail(title, build_email_html(matched, all_scraped), attachment=report_path)
 
     seen_ids.update(str(j.get("job_id")) for j in new_jobs)
     save_seen_ids(seen_ids)

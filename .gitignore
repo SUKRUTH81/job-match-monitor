@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+.env
+reports/
+data/seen_job_ids.json

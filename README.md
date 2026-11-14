@@ -14,23 +14,27 @@ This package scores collected jobs against the candidate skill profile, keeps a 
 
 ## Schedule
 
-The workflow is configured with:
+The workflow triggers once each hour between **8:00 AM and 11:00 PM IST** (02:30 UTC to 17:30 UTC):
 
 ```yaml
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    # Hourly triggers from 8:00 AM to 11:00 PM IST (02:30 UTC to 17:30 UTC)
+    - cron: '30 2-17 * * *'
+  workflow_dispatch:
 ```
 
-GitHub's documented minimum scheduled interval is five minutes. Scheduled runs are best-effort: GitHub can delay or drop a scheduled run during periods of high load. The workflow runs on the default branch only. Keep the repository active; scheduled workflows in public repositories can be disabled after 60 days without repository activity.
+Each run scans jobs posted within the **last 1 hour** (`--hours 1`), deduplicates against previously seen job IDs, creates a GitHub Issue when matches reach 60%+, and optionally emails the HTML report with the attached Excel workbook to `akhilarohithayepuri@gmail.com`.
 
-Each run should search the previous 24 hours to apply the requested posting-age window, then deduplicates by job ID. The workflow uses a concurrency group to prevent simultaneous runs; if a scan takes longer than five minutes, later runs can wait in the queue. Do not assume exact five-minute delivery.
+## Email notifications (Gmail)
 
-## Free-tier cost reality
-
-Five-minute scheduling creates up to 8,640 runs in a 30-day month. GitHub Free includes 2,000 minutes/month for private repositories; each private-repo run is billed with a minimum rounded-up minute. That cadence will exceed the private-repository free allowance. Standard GitHub-hosted runners are free for public repositories, but a public repository exposes the source code and candidate skill profile. Do not put secrets, personal contact details, resumes, or private job-search data in a public repository. See GitHub's official billing docs: <https://docs.github.com/en/actions/concepts/billing-and-usage>.
-
-If you require a private repository and zero cost, use a self-hosted runner on a computer that remains online; that does not meet the requirement that the computer can be off. Otherwise reduce the cadence or accept possible paid usage.
+To enable email delivery to `akhilarohithayepuri@gmail.com`:
+1. In your GitHub repository, go to **Settings → Secrets and variables → Actions → New repository secret**.
+2. Add:
+   - `GMAIL_ADDRESS`: your Gmail address (e.g. `yourname@gmail.com`).
+   - `GMAIL_APP_PASSWORD`: a 16-character Google App Password (generated at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)).
+   - *(Optional)* `JOB_ALERT_TO`: Defaults to `akhilarohithayepuri@gmail.com`.
+3. If these secrets are not configured, the runner will still generate the Excel artifact and create the assigned GitHub Issue without errors.
 
 ## LinkedIn input and automation boundary
 
