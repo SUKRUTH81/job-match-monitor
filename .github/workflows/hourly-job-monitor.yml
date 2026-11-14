@@ -55,7 +55,7 @@ jobs:
           LINKEDIN_PROXY: ${{ secrets.LINKEDIN_PROXY }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          JOB_ALERT_TO: ${{ secrets.JOB_ALERT_TO || 'akhilarohithayepuri@gmail.com' }}
+          JOB_ALERT_TO: ${{ secrets.JOB_ALERT_TO || 'sukruth1435@gmail.com, akhilarohithayepuri@gmail.com' }}
         run: python job_match_runner.py --hours 1 --target-count 0 --min-match 60
 
       - name: Save seen-job history

@@ -129,7 +129,15 @@ def _resolve_proxy(proxy_arg: str | None = None) -> str | None:
         or os.environ.get("HTTP_PROXY")
         or os.environ.get("ALL_PROXY")
     )
-    return p.strip() if p and p.strip() else None
+    if not p or not p.strip():
+        return None
+    p = p.strip()
+    # Guard against dummy or invalid placeholder strings
+    if "host:port" in p or "example.com" in p or p.lower() in ("none", "null", "false", "undefined", "empty"):
+        return None
+    if not (p.startswith("http://") or p.startswith("https://") or p.startswith("socks5://")):
+        p = f"http://{p}"
+    return p
 
 
 # ---------------------------------------------------------------------------
@@ -1082,7 +1090,7 @@ def create_github_issue(title: str, body: str) -> None:
         LOG.error("Failed to create GitHub Issue via gh CLI: %s", exc)
 
 
-DEFAULT_RECIPIENT = "akhilarohithayepuri@gmail.com"
+DEFAULT_RECIPIENTS = ["sukruth1435@gmail.com", "akhilarohithayepuri@gmail.com"]
 
 
 def build_email_html(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[str, Any]]) -> str:
@@ -1104,16 +1112,24 @@ def build_email_html(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Di
 def send_gmail(subject: str, html_body: str, attachment: Path | None = None) -> None:
     sender = os.environ.get("GMAIL_ADDRESS", "").strip()
     app_password = os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
-    recipient = os.environ.get("JOB_ALERT_TO", "").strip() or DEFAULT_RECIPIENT
+    recipients_raw = os.environ.get("JOB_ALERT_TO", "").strip()
+    if recipients_raw:
+        recipients = [r.strip() for r in re.split(r"[,;]+", recipients_raw) if r.strip()]
+    else:
+        recipients = DEFAULT_RECIPIENTS
 
     if not sender or not app_password:
-        LOG.info("GMAIL_ADDRESS or GMAIL_APP_PASSWORD not set. Skipping Gmail delivery to %s.", recipient)
+        LOG.warning(
+            "GMAIL_ADDRESS or GMAIL_APP_PASSWORD secret not set in GitHub repository. "
+            "Direct email delivery to %s skipped. Add these secrets in Settings -> Secrets and variables -> Actions.",
+            ", ".join(recipients),
+        )
         return
 
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = sender
-    msg["To"] = recipient
+    msg["To"] = ", ".join(recipients)
     msg.set_content("Your email client does not support HTML. Please view this message in an HTML-capable client.")
     msg.add_alternative(html_body, subtype="html")
     if attachment and attachment.exists():
@@ -1133,9 +1149,9 @@ def send_gmail(subject: str, html_body: str, attachment: Path | None = None) -> 
             server.ehlo()
             server.login(sender, app_password)
             server.send_message(msg)
-        LOG.info("Gmail match report successfully sent to %s", recipient)
+        LOG.info("Gmail match report successfully sent to: %s", ", ".join(recipients))
     except Exception as exc:
-        LOG.error("Failed to send email to %s: %s", recipient, exc)
+        LOG.error("Failed to send email to %s: %s", ", ".join(recipients), exc)
 
 
 def create_excel(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[str, Any]]) -> Path:

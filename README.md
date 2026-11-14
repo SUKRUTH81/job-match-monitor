@@ -24,16 +24,16 @@ on:
   workflow_dispatch:
 ```
 
-Each run scans jobs posted within the **last 1 hour** (`--hours 1`), deduplicates against previously seen job IDs, creates a GitHub Issue when matches reach 60%+, and optionally emails the HTML report with the attached Excel workbook to `akhilarohithayepuri@gmail.com`.
+Each run scans jobs posted within the **last 1 hour** (`--hours 1`), deduplicates against previously seen job IDs, creates a GitHub Issue when matches reach 60%+, and optionally emails the HTML report with the attached Excel workbook to **`sukruth1435@gmail.com`** and **`akhilarohithayepuri@gmail.com`**.
 
 ## Email notifications (Gmail)
 
-To enable email delivery to `akhilarohithayepuri@gmail.com`:
+To enable email delivery to `sukruth1435@gmail.com` and `akhilarohithayepuri@gmail.com`:
 1. In your GitHub repository, go to **Settings → Secrets and variables → Actions → New repository secret**.
 2. Add:
    - `GMAIL_ADDRESS`: your Gmail address (e.g. `yourname@gmail.com`).
    - `GMAIL_APP_PASSWORD`: a 16-character Google App Password (generated at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)).
-   - *(Optional)* `JOB_ALERT_TO`: Defaults to `akhilarohithayepuri@gmail.com`.
+   - *(Optional)* `JOB_ALERT_TO`: Defaults to `sukruth1435@gmail.com, akhilarohithayepuri@gmail.com`.
 3. If these secrets are not configured, the runner will still generate the Excel artifact and create the assigned GitHub Issue without errors.
 
 ## LinkedIn input and automation boundary
