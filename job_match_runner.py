@@ -251,15 +251,76 @@ REMOTE_ONLY_OUTSIDE_INDIA_PATTERNS = (
 )
 
 SEARCH_TERMS = [
-    "Python Django Developer",
-    "Full Stack Developer Python React",
-    "Python Backend Developer",
-    "AI Engineer Python",
-    "Software Engineer Python",
-    "Django Developer",
-    "Development Lead Python",
-    "AI Full Stack Engineer",
+    "AI Engineer",
+    "Software Engineer",
+    "Python Backend",
+    "Python Full Stack",
+    "Python Developer",
+    "Python",
 ]
+
+# Target role titles explicitly requested by candidate:
+# "ai engineer, software engineer, python backend, python full stack, python jobs only"
+ALLOWED_TITLE_PATTERNS = (
+    # AI Engineer & GenAI
+    r"\b(?:ai|a\.i\.|artificial intelligence|genai|gen ai|generative ai|llm|machine learning|ml)\b",
+    # Software Engineer & SDE
+    r"\bsoftware\s+(?:development\s+)?engineer\b",
+    r"\bsoftware\s+developer\b",
+    r"\bsde\b",
+    r"\bsde[- ]?[123iIvV]+\b",
+    r"\bmember of technical staff\b",
+    r"\bmts\b",
+    # Python Backend
+    r"\b(?:backend|back[- ]end)\b",
+    # Python Full Stack
+    r"\b(?:full[- ]stack|fullstack)\b",
+    # Python jobs
+    r"\bpython\b",
+    r"\bdjango\b",
+    r"\bfastapi\b",
+    r"\bflask\b",
+)
+
+EXCLUDED_TITLE_KEYWORDS = (
+    r"\bqa\b",
+    r"\bquality assurance\b",
+    r"\btester\b",
+    r"\btesting\b",
+    r"\btest engineer\b",
+    r"\bsdet\b",
+    r"\bsystem performance\b",
+    r"\bperformance engineer\b",
+    r"\bhardware\b",
+    r"\bfpga\b",
+    r"\basic\b",
+    r"\bmechanical\b",
+    r"\bcivil\b",
+    r"\belectrical\b",
+    r"\bnetwork engineer\b",
+    r"\bsalesforce\b",
+    r"\bsap\b",
+    r"\bscrum master\b",
+    r"\bproduct manager\b",
+    r"\bproject manager\b",
+    r"\btechnical writer\b",
+    r"\brecruiter\b",
+    r"\bhr\b",
+)
+
+
+def title_is_eligible(job: Dict[str, Any]) -> bool:
+    """Validate that the job title strictly matches one of the candidate's target roles:
+    AI Engineer, Software Engineer, Python Backend, Python Full Stack, or Python jobs.
+    Excludes QA, testing, hardware, performance, and non-software roles.
+    """
+    title = str(job.get("title") or "").strip().lower()
+    if not title:
+        return False
+    if any(re.search(pat, title, re.I) for pat in EXCLUDED_TITLE_KEYWORDS):
+        return False
+    return any(re.search(pat, title, re.I) for pat in ALLOWED_TITLE_PATTERNS)
+
 
 
 def canonical_skill_hits(text: str) -> List[str]:
@@ -997,10 +1058,15 @@ def source_is_allowed(job: Dict[str, Any]) -> bool:
     return ("linkedin" in source or bool(url)) and url.startswith("https://www.linkedin.com/jobs/view/")
 
 
-def filter_job_preferences(jobs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def filter_job_preferences(jobs: Sequence[Dict[str, Any]], enforce_title: bool = True) -> List[Dict[str, Any]]:
     eligible = []
     for job in jobs:
-        if source_is_allowed(job) and location_is_eligible(job) and experience_is_eligible(job):
+        if (
+            source_is_allowed(job)
+            and location_is_eligible(job)
+            and experience_is_eligible(job)
+            and (not enforce_title or title_is_eligible(job))
+        ):
             eligible.append(job)
     return eligible
 
@@ -1218,7 +1284,7 @@ def main() -> int:
         no_jd=args.no_jd,
     )
     all_found = filter_job_preferences(collected)
-    LOG.info("Collected %d jobs; %d meet location and 2-year experience eligibility.", len(collected), len(all_found))
+    LOG.info("Collected %d jobs; %d meet location, 2-year experience, and target title eligibility.", len(collected), len(all_found))
     for job in all_found:
         score_job(job)
         job["job_url"] = clean_job_url(job)

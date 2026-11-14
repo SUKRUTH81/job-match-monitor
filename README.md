@@ -12,6 +12,17 @@ This package scores collected jobs against the candidate skill profile, keeps a 
 - Every row includes a direct application link, score, location/work mode, experience estimate, matched skills, and other detected technical skills.
 - An Excel workbook is uploaded as a workflow artifact with `60%+ Matches` and `All Scraped` sheets.
 
+## Target Job Roles & Strict Title Filtering
+
+The monitor strictly searches for and filters by the candidate's target job titles:
+- **AI Engineer**: AI Engineer, GenAI Engineer, LLM Engineer, Machine Learning Engineer, Artificial Intelligence Engineer.
+- **Software Engineer**: Software Engineer, Software Developer, SDE (I/II/III), Member of Technical Staff.
+- **Python Backend**: Python Backend Developer, Backend Engineer (Python).
+- **Python Full Stack**: Python Full Stack Developer, Full Stack Engineer (Python).
+- **Python Jobs**: Python Developer, Python Programmer, Django/FastAPI Developer.
+
+*Non-software, QA, testing (SDET, QA Engineer), system performance, hardware, and administrative roles are strictly excluded.*
+
 ## Schedule
 
 The workflow triggers once each hour between **8:00 AM and 11:00 PM IST** (02:30 UTC to 17:30 UTC):

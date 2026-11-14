@@ -10,6 +10,10 @@ on:
         description: 'Posting age window in hours'
         required: false
         default: '2'
+      keywords:
+        description: 'Optional comma-separated search terms (leave empty for default AI/Software/Python terms)'
+        required: false
+        default: ''
   push:
     paths:
       - 'data/linkedin_jobs.json'
@@ -63,7 +67,11 @@ jobs:
           JOB_ALERT_TO: ${{ secrets.JOB_ALERT_TO || 'sukruth1435@gmail.com, akhilarohithayepuri@gmail.com' }}
         run: |
           HOURS="${{ inputs.hours || (github.event_name == 'schedule' && '1' || '2') }}"
-          python job_match_runner.py --hours $HOURS --target-count 0 --min-match 60
+          KW_ARG=""
+          if [ -n "${{ inputs.keywords }}" ]; then
+            KW_ARG="--keywords ${{ inputs.keywords }}"
+          fi
+          python job_match_runner.py --hours $HOURS --target-count 0 --min-match 60 $KW_ARG
 
       - name: Save seen-job history
         if: success()
