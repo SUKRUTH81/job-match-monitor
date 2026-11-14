@@ -531,7 +531,8 @@ def scrape_linkedin_guest_jobs(
     tpr_seconds = max(3600, int(float(hours) * 3600))
     f_tpr = f"r{tpr_seconds}"
 
-    per_term_cap = target_count if target_count > 0 else 15
+    # Allow scraping as many fresh jobs as possible (up to 100 per term)
+    per_term_cap = target_count if target_count > 0 else 100
     collected: List[Dict[str, Any]] = []
     seen_ids: Set[str] = set()
 
@@ -926,9 +927,12 @@ def collect_jobs(
             job["freshness_badge"] = f"{age:.1f}h ago"
         accepted.append(job)
 
-    # 4. Enrich full JD if descriptions are missing
+    # 4. Enrich full JD if descriptions are missing (prioritize target candidate roles)
     if not no_jd:
-        enrich_linkedin_jds(accepted, proxy=proxy, hours=hours)
+        eligible_target = [j for j in accepted if title_is_eligible(j) and location_is_eligible(j)]
+        other_jobs = [j for j in accepted if j not in eligible_target]
+        to_enrich = eligible_target + other_jobs[:50]
+        enrich_linkedin_jds(to_enrich, proxy=proxy, max_concurrency=8, hours=hours)
 
     accepted.sort(key=lambda item: float(item.get("age_hours", 999999)))
     if target_count > 0:
@@ -1262,7 +1266,7 @@ def create_excel(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[s
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scheduled LinkedIn job scraping, skills matching, and GitHub notifications")
     parser.add_argument("--hours", type=float, default=1.0, help="Only consider jobs posted within this many hours (e.g., 1 for 1 hour ago, 24 for 24h)")
-    parser.add_argument("--target-count", type=int, default=15, help="Maximum jobs to collect (0 for all fresh)")
+    parser.add_argument("--target-count", type=int, default=0, help="Maximum jobs to collect (0 for all fresh / scrape as many as possible)")
     parser.add_argument("--delay", type=float, default=1.0, help="Delay between search pages in seconds")
     parser.add_argument("--min-match", type=int, default=60, help="Minimum skill match percentage to notify (default 60)")
     parser.add_argument("--source", choices=["auto", "guest", "file"], default="auto",
