@@ -1059,24 +1059,23 @@ def experience_is_eligible(
     if maximum is not None and maximum < candidate_yoe:
         return has_flexible
 
-    # 2. Minimum explicitly exceeds our ceiling (e.g. 6+, 8+, 10+ years)
-    if minimum is not None and minimum > max_allowed_yoe:
+    # 2. Stated minimum strictly exceeds ceiling or range starts above candidate level (e.g. 5-8, 6+, 8+, 10+ years)
+    if minimum is not None and (minimum > max_allowed_yoe or (maximum is not None and minimum > 3.0)):
         return has_flexible
 
-    # 3. Both minimum and maximum are specified (e.g. 0-1, 1-3, 2-4, 2-5, 3-5, 6-10):
-    # Must strictly include 2 or be a 2+ range:
-    # includes_2: minimum <= candidate_yoe <= maximum
-    # is_2_plus: candidate_yoe <= minimum <= max_allowed_yoe
+    # 3. Both minimum and maximum are specified (e.g. 0-1, 1-3, 2-4, 2-5, 3-5, 5-8):
+    # Must strictly include 2 years (minimum <= 2.0 <= maximum) or be a 2-3+ range
     if minimum is not None and maximum is not None:
         includes_2 = (minimum <= candidate_yoe <= maximum)
-        is_2_plus = (candidate_yoe <= minimum <= max_allowed_yoe)
-        if includes_2 or is_2_plus:
+        is_close_range = (minimum <= 3.0 and maximum <= max_allowed_yoe)
+        if includes_2 or is_close_range:
             return True
         return has_flexible
 
-    # 4. Only minimum is specified (e.g. 2+, 3+, 4+)
+    # 4. Only minimum is specified (e.g. 2+, 3+)
     if minimum is not None:
-        if minimum <= max_allowed_yoe:
+        # 1+, 2+, 3+ accepted; 4+, 5+, 6+, 8+ rejected
+        if minimum <= 3.0:
             return True
         return has_flexible
 
@@ -1088,18 +1087,18 @@ def experience_is_eligible(
     rm = EXP_RANGE_PATTERN.search(blob)
     if rm:
         lo, hi = float(rm.group(1)), float(rm.group(2))
-        if hi < candidate_yoe or lo > max_allowed_yoe:
+        if hi < candidate_yoe or lo > max_allowed_yoe or (lo > 3.0):
             return has_flexible
         includes_2 = (lo <= candidate_yoe <= hi)
-        is_2_plus = (candidate_yoe <= lo <= max_allowed_yoe)
-        if includes_2 or is_2_plus:
+        is_close_range = (lo <= 3.0 and hi <= max_allowed_yoe)
+        if includes_2 or is_close_range:
             return True
         return has_flexible
 
     mm = EXP_MIN_PATTERN.search(blob) or EXP_PLUS_PATTERN.search(blob) or EXP_YEARS_PATTERN.search(blob)
     if mm:
         val = float(mm.group(1))
-        if val > max_allowed_yoe:
+        if val > 3.0:
             return has_flexible
         return True
 
