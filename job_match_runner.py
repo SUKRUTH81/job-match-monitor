@@ -234,20 +234,22 @@ SKILL_PATTERNS: Dict[str, Tuple[str, ...]] = {
     "tensorflow": (r"\btensorflow\b",),
 }
 
-# Current search preferences supplied by the candidate.
-TARGET_CITIES = ("hyderabad", "chennai", "bengaluru", "bangalore")
-ALLOWED_LOCAL_WORK_MODES = {"onsite", "on-site", "hybrid", "remote"}
-REMOTE_WORLDWIDE_PATTERNS = (
-    r"\bworldwide\b", r"\bglobal(?:ly)? remote\b",
-    r"\banywhere(?: in the world)?\b", r"\bwork from anywhere\b",
-    r"\bremote[- ]anywhere\b",
+# Current search preferences supplied by the candidate:
+# Strictly: Hyderabad, Bengaluru/Bangalore, Chennai (any work mode: onsite, hybrid, in-office, remote) and India Remote.
+# Worldwide remote and other cities (e.g. Pune, Noida, Gurgaon, Mumbai) are strictly excluded.
+TARGET_CITIES = (
+    "hyderabad", "secunderabad",
+    "bengaluru", "bangalore", "bgl",
+    "chennai", "madras",
 )
+ALLOWED_LOCAL_WORK_MODES = {"onsite", "on-site", "in-office", "inoffice", "hybrid", "remote"}
+
 REMOTE_INDIA_PATTERNS = (
     r"\bindia\b", r"\bindia[- ]eligible\b", r"\bopen to applicants in india\b",
 )
 REMOTE_ONLY_OUTSIDE_INDIA_PATTERNS = (
     r"\b(?:united states|usa|us only|canada only|uk only|united kingdom only|"
-    r"australia only|europe only|emea only|germany only|france only)\b",
+    r"australia only|europe only|emea only|germany only|france only|singapore only)\b",
 )
 
 SEARCH_TERMS = [
@@ -1022,27 +1024,52 @@ def experience_is_eligible(job: Dict[str, Any]) -> bool:
 
 
 def location_is_eligible(job: Dict[str, Any]) -> bool:
-    """Allow any job in India (all Indian cities, pan-India, hybrid, onsite) or worldwide remote."""
+    """Strict candidate location requirements:
+    1. Hyderabad, Bengaluru/Bangalore, Chennai: All work modes allowed (On-site, In-office, Hybrid, Remote).
+    2. India Remote: Remote positions specifically based in India or open to applicants in India.
+    3. Strictly excludes: Worldwide remote, outside-India remote, and onsite/hybrid in other cities.
+    """
     location = str(job.get("location") or "").lower()
     workplace = str(job.get("workplace_type") or "").lower().replace("_", "-")
     title = str(job.get("title") or "").lower()
     description = str(job.get("description") or "").lower()
     blob = f"{title}\n{location}\n{workplace}\n{description}"
 
-    # Disallow jobs explicitly restricted to other countries outside India
+    # 1. Strictly exclude roles explicitly restricted to countries outside India
     if any(re.search(pat, location, re.I) for pat in REMOTE_ONLY_OUTSIDE_INDIA_PATTERNS):
         return False
 
-    # Allow if located in India or any Indian tech city
-    if "india" in location or any(city in location for city in TARGET_CITIES):
+    # 2. Check if job is in the 3 target cities: Hyderabad, Bengaluru/Bangalore, or Chennai
+    # For these 3 cities, on-site, in-office, hybrid, and remote are all accepted.
+    city_match = any(re.search(rf"\b{re.escape(city)}\b", location, re.I) for city in TARGET_CITIES)
+    if city_match:
         return True
 
-    # Allow remote roles open to India or worldwide
-    if any(term in blob for term in ("remote", "work from home", "wfh", "distributed", "anywhere", "worldwide")):
-        return True
+    # 3. Check for India Remote:
+    # Must be remote AND based in India (not worldwide/global remote)
+    is_remote = (
+        any(term in workplace for term in ("remote", "work from home", "wfh", "distributed"))
+        or bool(re.search(r"\b(remote|work from home|wfh)\b", location))
+        or bool(re.search(r"\b(?:remote|wfh)\b", title))
+    )
 
-    # Default to True for jobs harvested from the India guest endpoint
-    return True
+    if is_remote:
+        # Check if explicitly worldwide/global remote without India base
+        is_worldwide_only = bool(re.search(r"\b(?:worldwide|global(?:ly)? remote|anywhere in the world)\b", blob, re.I))
+        if is_worldwide_only and "india" not in location:
+            return False
+
+        # Must have an explicit India connection
+        has_india = (
+            "india" in location
+            or bool(re.search(r"\bindia\b", blob, re.I))
+            or bool(re.search(r"\bopen to applicants in india\b", blob, re.I))
+        )
+        if has_india:
+            return True
+
+    # Non-target cities (e.g. Pune, Noida, Gurgaon, Mumbai) that are onsite/hybrid are excluded
+    return False
 
 
 def experience_label(job: Dict[str, Any]) -> str:
@@ -1132,8 +1159,8 @@ def markdown_table(jobs: Sequence[Dict[str, Any]]) -> str:
 
 def build_github_issue_body(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[str, Any]]) -> str:
     run_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
-    actor = os.environ.get("GITHUB_ACTOR", "").strip()
-    mention_header = f"Attention: @{actor}\n\n" if actor else ""
+    actor = os.environ.get("GITHUB_ACTOR", "SUKRUTH81").strip() or "SUKRUTH81"
+    mention_header = f"cc @{actor}\n\n"
     return f"""# Job Match Report\n\n{mention_header}**Run time:** {run_time}  
 **Skill score:** matching candidate skills / distinct technical skills detected in the job description × 100.  
 **Notification rule:** this issue is created only when at least one new job scores 60% or higher.\n\n## 1. Jobs matching 60% or more ({len(matched)})\n\nSorted by match percentage, highest first.\n\n{markdown_table(matched)}\n\n## 2. All newly discovered jobs scraped ({len(all_scraped)})\n\nIncludes every new unique job collected in this run, including jobs below 60%. Sorted highest first.\n\n{markdown_table(all_scraped)}\n\n---\nPlease verify eligibility and posting details on the employer's application page.\n"""
