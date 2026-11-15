@@ -1132,7 +1132,9 @@ def markdown_table(jobs: Sequence[Dict[str, Any]]) -> str:
 
 def build_github_issue_body(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[str, Any]]) -> str:
     run_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
-    return f"""# Job Match Report\n\n**Run time:** {run_time}  
+    actor = os.environ.get("GITHUB_ACTOR", "").strip()
+    mention_header = f"Attention: @{actor}\n\n" if actor else ""
+    return f"""# Job Match Report\n\n{mention_header}**Run time:** {run_time}  
 **Skill score:** matching candidate skills / distinct technical skills detected in the job description × 100.  
 **Notification rule:** this issue is created only when at least one new job scores 60% or higher.\n\n## 1. Jobs matching 60% or more ({len(matched)})\n\nSorted by match percentage, highest first.\n\n{markdown_table(matched)}\n\n## 2. All newly discovered jobs scraped ({len(all_scraped)})\n\nIncludes every new unique job collected in this run, including jobs below 60%. Sorted highest first.\n\n{markdown_table(all_scraped)}\n\n---\nPlease verify eligibility and posting details on the employer's application page.\n"""
 
