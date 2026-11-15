@@ -1304,11 +1304,18 @@ def send_push_notification(title: str, message: str, click_url: str = "", priori
         headers["Click"] = click_url
 
     try:
-        req = urllib.request.Request(endpoint, data=message.encode("utf-8"), headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            if resp.status == 200:
+        if requests is not None:
+            r = requests.post(endpoint, data=message.encode("utf-8"), headers=headers, timeout=10)
+            if r.status_code == 200:
                 LOG.info("Push notification successfully sent to ntfy.sh/%s", topic)
                 return True
+        else:
+            import urllib.request
+            req = urllib.request.Request(endpoint, data=message.encode("utf-8"), headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    LOG.info("Push notification successfully sent to ntfy.sh/%s", topic)
+                    return True
     except Exception as exc:
         LOG.warning("Failed to send push notification to ntfy.sh: %s", exc)
     return False
