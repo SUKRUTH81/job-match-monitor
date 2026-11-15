@@ -1055,33 +1055,44 @@ def experience_is_eligible(
     )
     has_flexible = any(phrase in blob for phrase in flexible_phrases)
 
-    # 1. Minimum explicitly exceeds our ceiling (e.g. 6+, 8+, 10+ years)
+    # 1. Stated maximum is strictly below candidate profile (e.g. freshers, 0-1 yr only)
+    if maximum is not None and maximum < candidate_yoe:
+        return has_flexible
+
+    # 2. Minimum explicitly exceeds our ceiling (e.g. 6+, 8+, 10+ years)
     if minimum is not None and minimum > max_allowed_yoe:
         return has_flexible
 
-    # 2. Both minimum and maximum are specified (e.g. 1-3, 2-4, 3-5, 6-10)
+    # 3. Both minimum and maximum are specified (e.g. 0-1, 1-3, 2-4, 2-5, 3-5, 6-10):
+    # Must strictly include 2 or be a 2+ range:
+    # includes_2: minimum <= candidate_yoe <= maximum
+    # is_2_plus: candidate_yoe <= minimum <= max_allowed_yoe
     if minimum is not None and maximum is not None:
-        if (minimum <= candidate_yoe <= maximum) or (minimum <= max_allowed_yoe):
+        includes_2 = (minimum <= candidate_yoe <= maximum)
+        is_2_plus = (candidate_yoe <= minimum <= max_allowed_yoe)
+        if includes_2 or is_2_plus:
             return True
         return has_flexible
 
-    # 3. Only minimum is specified
+    # 4. Only minimum is specified (e.g. 2+, 3+, 4+)
     if minimum is not None:
         if minimum <= max_allowed_yoe:
             return True
         return has_flexible
 
-    # 4. Only maximum is specified
+    # 5. Only maximum is specified (e.g. up to 3 years)
     if maximum is not None:
         return maximum >= candidate_yoe or has_flexible
 
-    # 5. Direct fallback regex in blob
+    # 6. Direct fallback regex in blob
     rm = EXP_RANGE_PATTERN.search(blob)
     if rm:
         lo, hi = float(rm.group(1)), float(rm.group(2))
-        if lo > max_allowed_yoe:
+        if hi < candidate_yoe or lo > max_allowed_yoe:
             return has_flexible
-        if (lo <= candidate_yoe <= hi) or (lo <= max_allowed_yoe):
+        includes_2 = (lo <= candidate_yoe <= hi)
+        is_2_plus = (candidate_yoe <= lo <= max_allowed_yoe)
+        if includes_2 or is_2_plus:
             return True
         return has_flexible
 
