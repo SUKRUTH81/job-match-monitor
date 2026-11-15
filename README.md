@@ -106,6 +106,20 @@ Committing `data/linkedin_jobs.json` to the default branch triggers a run. The s
 8. Go to **Settings → Notifications** in GitHub and enable issue assignment / repository notifications. Watch the repository (or configure custom notifications for Issues) so assigned job-alert issues reach your GitHub inbox/mobile app.
 9. Check **Actions → Job Match Monitor** to inspect run logs. Download the Excel workbook from a successful run's **Artifacts** section.
 
+## Notifications (Push, Email & Issues)
+
+1. **Instant Phone Push Notifications (ntfy.sh):**
+   - Free, zero-setup, instant lock-screen push alerts with sound.
+   - Install the free **ntfy** app from Google Play Store or Apple App Store (or open [https://ntfy.sh/sukruth_job_alerts](https://ntfy.sh/sukruth_job_alerts) in any browser).
+   - Subscribe to topic: `sukruth_job_alerts`.
+   - Whenever matching roles are found, your phone buzzes with an instant notification containing the job title, company, match score, Easy Apply tag, and clickable link!
+2. **GitHub Mobile Push Notifications:**
+   - Install the GitHub Mobile app on your phone and enable notifications.
+   - Every issue automatically mentions and assigns `@SUKRUTH81`, delivering an immediate push alert.
+3. **Email Notifications:**
+   - GitHub automatically sends notification emails from `notifications@github.com` (found under the **Updates** tab or **Spam** folder).
+   - Direct Gmail SMTP delivery is also supported if `GMAIL_ADDRESS` and `GMAIL_APP_PASSWORD` secrets are provided.
+
 ## Permissions and secrets
 
 No Gmail credentials or custom personal access token are required. GitHub Actions supplies `GITHUB_TOKEN`; the workflow grants it only `issues: write` and `contents: read`.

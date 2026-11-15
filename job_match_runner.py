@@ -1263,7 +1263,7 @@ def build_github_issue_body(matched: Sequence[Dict[str, Any]], all_scraped: Sequ
 **Notification rule:** this issue is created only when at least one new job scores 60% or higher.\n\n{ratio_str}## 1. Jobs matching 60% or more ({len(matched)})\n\nSorted by match percentage and Easy Apply priority.\n\n{markdown_table(matched)}\n\n## 2. All newly discovered jobs scraped ({len(all_scraped)})\n\nIncludes every new unique job collected in this run, including jobs below 60%. Sorted highest first.\n\n{markdown_table(all_scraped)}\n\n---\nPlease verify eligibility and posting details on the employer's application page.\n"""
 
 
-def create_github_issue(title: str, body: str) -> None:
+def create_github_issue(title: str, body: str) -> str:
     import subprocess
 
     token = os.environ.get("GITHUB_TOKEN", "").strip()
@@ -1271,7 +1271,7 @@ def create_github_issue(title: str, body: str) -> None:
     actor = os.environ.get("GITHUB_ACTOR", "").strip()
     if not token or not repo:
         LOG.warning("GITHUB_TOKEN or GITHUB_REPOSITORY not set. Skipping GitHub Issue creation.")
-        return
+        return ""
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     body_path = REPORT_DIR / "github_issue_body.md"
@@ -1283,9 +1283,35 @@ def create_github_issue(title: str, body: str) -> None:
     env["GH_TOKEN"] = token
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
-        LOG.info("GitHub notification issue created: %s", result.stdout.strip())
+        issue_url = result.stdout.strip()
+        LOG.info("GitHub notification issue created: %s", issue_url)
+        return issue_url
     except Exception as exc:
         LOG.error("Failed to create GitHub Issue via gh CLI: %s", exc)
+        return ""
+
+
+def send_push_notification(title: str, message: str, click_url: str = "", priority: str = "high") -> bool:
+    """Send real-time mobile/desktop push notification via ntfy.sh (zero-config, free, instant lock-screen alert)."""
+    topic = os.environ.get("NTFY_TOPIC", "sukruth_job_alerts").strip() or "sukruth_job_alerts"
+    endpoint = f"https://ntfy.sh/{topic}"
+    headers = {
+        "Title": title[:200],
+        "Priority": priority,
+        "Tags": "briefcase,bell",
+    }
+    if click_url and click_url.startswith("http"):
+        headers["Click"] = click_url
+
+    try:
+        req = urllib.request.Request(endpoint, data=message.encode("utf-8"), headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status == 200:
+                LOG.info("Push notification successfully sent to ntfy.sh/%s", topic)
+                return True
+    except Exception as exc:
+        LOG.warning("Failed to send push notification to ntfy.sh: %s", exc)
+    return False
 
 
 DEFAULT_RECIPIENTS = ["sukruth1435@gmail.com", "akhilarohithayepuri@gmail.com"]
@@ -1441,33 +1467,50 @@ def main() -> int:
     new_jobs = [j for j in all_found if str(j.get("job_id")) not in seen_ids]
     LOG.info("Collected %d unique jobs; %d are newly discovered.", len(all_found), len(new_jobs))
 
-    if not new_jobs:
-        if args.force_notify and all_found:
-            LOG.info("--force-notify active: generating report with all eligible matching jobs.")
-            new_jobs = list(all_found)
+    # Report newly discovered jobs; if none are brand-new, report current active eligible jobs in this window
+    jobs_to_report = new_jobs if new_jobs else list(all_found)
+    run_stamp = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %I:%M %p IST")
+
+    if not jobs_to_report:
+        LOG.info("No eligible jobs found in this window. Generating scan status report.")
+        if args.force_notify and collected:
+            jobs_to_report = list(collected)
         else:
-            LOG.info("No new jobs. No GitHub notification created.")
             save_seen_ids(seen_ids)
+            send_push_notification(
+                f"LinkedIn Scan at {run_stamp}: 0 Matches",
+                f"Scan finished: Evaluated {len(collected)} fresh LinkedIn jobs. No matching roles found in the 1h window.",
+                priority="default",
+            )
             return 0
 
-    new_jobs.sort(key=lambda j: (int(j.get("skill_match_pct", 0)), 1 if j.get("is_easy_apply") else 0, str(j.get("title", "")).lower()), reverse=True)
-    matched = [j for j in new_jobs if int(j.get("skill_match_pct", 0)) >= args.min_match]
+    jobs_to_report.sort(key=lambda j: (int(j.get("skill_match_pct", 0)), 1 if j.get("is_easy_apply") else 0, str(j.get("title", "")).lower()), reverse=True)
+    matched = [j for j in jobs_to_report if int(j.get("skill_match_pct", 0)) >= args.min_match]
     matched.sort(key=lambda j: (int(j.get("skill_match_pct", 0)), 1 if j.get("is_easy_apply") else 0, str(j.get("title", "")).lower()), reverse=True)
-    all_scraped = sorted(new_jobs, key=lambda j: (int(j.get("skill_match_pct", 0)), 1 if j.get("is_easy_apply") else 0, str(j.get("title", "")).lower()), reverse=True)
+    all_scraped = sorted(jobs_to_report, key=lambda j: (int(j.get("skill_match_pct", 0)), 1 if j.get("is_easy_apply") else 0, str(j.get("title", "")).lower()), reverse=True)
 
-    # Always generate the report for new LinkedIn records; only 60%+ matches notify.
     report_path = create_excel(matched, all_scraped)
-    run_stamp = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %I:%M %p IST")
     title = f"LinkedIn job matches: {len(matched)} at 60%+ | {run_stamp}"
+
+    issue_url = ""
     if not matched:
-        LOG.info("New LinkedIn jobs were found, but none reached %d%%. Excel report created; no GitHub Issue.", args.min_match)
+        LOG.info("LinkedIn jobs were found, but none reached %d%%. Excel report created; no GitHub Issue.", args.min_match)
+        send_push_notification(
+            f"LinkedIn Scan at {run_stamp}: 0 Matches at 60%+",
+            f"Scanned {len(all_scraped)} roles in the 1h window. None reached the {args.min_match}% skill threshold.",
+            priority="default",
+        )
     else:
-        create_github_issue(title, build_github_issue_body(matched, all_scraped))
+        issue_url = create_github_issue(title, build_github_issue_body(matched, all_scraped))
+        top_job = matched[0]
+        easy_tag = " [⚡ Easy Apply]" if top_job.get("is_easy_apply") else ""
+        push_msg = f"{len(matched)} match(es) >=60%! Top: {top_job.get('title')} at {top_job.get('company')} ({int(top_job.get('skill_match_pct', 0))}%) in {top_job.get('location')}{easy_tag}"
+        send_push_notification(title, push_msg, click_url=issue_url or top_job.get("job_url", ""), priority="high")
 
     # Send email notification (to akhilarohithayepuri@gmail.com) with attached Excel report
     send_gmail(title, build_email_html(matched, all_scraped), attachment=report_path)
 
-    seen_ids.update(str(j.get("job_id")) for j in new_jobs)
+    seen_ids.update(str(j.get("job_id")) for j in jobs_to_report)
     save_seen_ids(seen_ids)
     LOG.info("Excel report saved: %s", report_path)
     return 0
