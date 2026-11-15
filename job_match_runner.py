@@ -1022,25 +1022,27 @@ def experience_is_eligible(job: Dict[str, Any]) -> bool:
 
 
 def location_is_eligible(job: Dict[str, Any]) -> bool:
-    """Allow any work mode in Hyderabad/Chennai/Bengaluru; allow India or worldwide remote."""
+    """Allow any job in India (all Indian cities, pan-India, hybrid, onsite) or worldwide remote."""
     location = str(job.get("location") or "").lower()
     workplace = str(job.get("workplace_type") or "").lower().replace("_", "-")
+    title = str(job.get("title") or "").lower()
     description = str(job.get("description") or "").lower()
-    blob = f"{location}\n{workplace}\n{description}"
+    blob = f"{title}\n{location}\n{workplace}\n{description}"
 
-    city_match = any(city in location for city in TARGET_CITIES)
-    if city_match:
-        return True  # Onsite, hybrid, and remote are all acceptable in these cities.
-
-    remote_marked = any(term in workplace for term in ("remote", "work from home", "distributed"))
-    remote_marked = remote_marked or bool(re.search(r"\b(remote|work from home|wfh)\b", location))
-    if not remote_marked:
+    # Disallow jobs explicitly restricted to other countries outside India
+    if any(re.search(pat, location, re.I) for pat in REMOTE_ONLY_OUTSIDE_INDIA_PATTERNS):
         return False
 
-    worldwide = any(re.search(pattern, blob, re.I) for pattern in REMOTE_WORLDWIDE_PATTERNS)
-    india_eligible = any(re.search(pattern, blob, re.I) for pattern in REMOTE_INDIA_PATTERNS)
-    restricted_elsewhere = any(re.search(pattern, location, re.I) for pattern in REMOTE_ONLY_OUTSIDE_INDIA_PATTERNS)
-    return (worldwide or india_eligible) and not restricted_elsewhere
+    # Allow if located in India or any Indian tech city
+    if "india" in location or any(city in location for city in TARGET_CITIES):
+        return True
+
+    # Allow remote roles open to India or worldwide
+    if any(term in blob for term in ("remote", "work from home", "wfh", "distributed", "anywhere", "worldwide")):
+        return True
+
+    # Default to True for jobs harvested from the India guest endpoint
+    return True
 
 
 def experience_label(job: Dict[str, Any]) -> str:

@@ -2,8 +2,9 @@ name: Job Match Monitor
 
 on:
   schedule:
-    # Triggers hourly from 8:00 AM to 11:00 PM IST (02:30 UTC to 17:30 UTC)
-    - cron: '30 2-17 * * *'
+    # Triggers hourly from 8:05 AM to 11:05 PM IST (02:35 UTC to 17:35 UTC)
+    # Using minute 35 avoids GitHub queue starvation/drops at minute 0 and 30
+    - cron: '35 2-17 * * *'
   workflow_dispatch:
     inputs:
       hours:
@@ -66,7 +67,7 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           JOB_ALERT_TO: ${{ secrets.JOB_ALERT_TO || 'sukruth1435@gmail.com, akhilarohithayepuri@gmail.com' }}
         run: |
-          HOURS="${{ inputs.hours || (github.event_name == 'schedule' && '1' || '2') }}"
+          HOURS="${{ inputs.hours || '2' }}"
           KW_ARG=""
           if [ -n "${{ inputs.keywords }}" ]; then
             KW_ARG="--keywords ${{ inputs.keywords }}"
