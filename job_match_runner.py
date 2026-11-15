@@ -567,14 +567,16 @@ def scrape_linkedin_guest_jobs(
         len(terms), len(locs), hours, f_tpr,
     )
 
+    # Target 80% Easy Apply (f_AL=true) and 20% Normal Apply jobs
+    apply_modes = [
+        {"name": "Easy Apply", "is_easy": True, "param": "&f_AL=true", "ratio": 0.8},
+        {"name": "Normal Apply", "is_easy": False, "param": "", "ratio": 0.2},
+    ]
+
     for term in terms:
         for loc in locs:
             if target_count > 0 and len(collected) >= target_count:
                 break
-
-            term_jobs = 0
-            start = 0
-            consecutive_empty = 0
 
             is_remote_loc = loc.strip().lower() == "remote"
             query_loc = "India" if is_remote_loc else loc
@@ -583,122 +585,130 @@ def scrape_linkedin_guest_jobs(
             encoded_kw = quote_plus(term)
             encoded_loc = quote_plus(query_loc)
 
-            while term_jobs < per_term_cap and consecutive_empty < 2:
-                url = (
-                    f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-                    f"?keywords={encoded_kw}&location={encoded_loc}&f_TPR={f_tpr}&f_JT=F{remote_param}&start={start}"
-                )
-
-                resp = None
-                for attempt in range(backoff.max_retries):
-                    try:
-                        r = session.get(url, headers=_get_browser_headers(), timeout=15)
-                        if r.status_code == 200:
-                            backoff.reset()
-                            resp = r
-                            break
-                        elif r.status_code in (429, 403):
-                            wait = backoff.wait_seconds(attempt, r.headers.get("Retry-After"))
-                            backoff.record_failure()
-                            LOG.warning("Rate limit (HTTP %d). Waiting %.1fs before retry...", r.status_code, wait)
-                            time.sleep(wait)
-                            if backoff.exhausted:
-                                LOG.error("Backoff exhausted on LinkedIn guest API. Skipping term %s.", term)
-                                break
-                        else:
-                            LOG.warning("LinkedIn returned HTTP %d for %s", r.status_code, term)
-                            time.sleep(2.0)
-                    except Exception as err:
-                        LOG.warning("Network error querying LinkedIn: %s", err)
-                        time.sleep(backoff.wait_seconds(attempt))
-
-                if not resp or not resp.text.strip():
-                    consecutive_empty += 1
-                    start += 10
-                    continue
-
-                soup = BeautifulSoup(resp.text, "html.parser")
-                cards = soup.find_all("li")
-                if not cards:
-                    consecutive_empty += 1
-                    start += 10
-                    continue
-
+            for mode in apply_modes:
+                mode_cap = max(2, int(per_term_cap * mode["ratio"]))
+                mode_jobs = 0
+                start = 0
                 consecutive_empty = 0
-                for card in cards:
-                    try:
-                        t_el = card.find("h3", class_="base-search-card__title") or card.find("h3")
-                        co_el = card.find("h4", class_="base-search-card__subtitle") or card.find("h4")
-                        lo_el = card.find("span", class_="job-search-card__location")
-                        ti_el = card.find("time")
-                        li_el = card.find("a", class_="base-card__full-link") or card.find("a", href=True)
 
-                        if not (t_el and li_el):
-                            continue
+                while mode_jobs < mode_cap and consecutive_empty < 2:
+                    url = (
+                        f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+                        f"?keywords={encoded_kw}&location={encoded_loc}&f_TPR={f_tpr}&f_JT=F{mode['param']}{remote_param}&start={start}"
+                    )
 
-                        title = t_el.get_text(" ", strip=True)
-                        company = co_el.get_text(" ", strip=True) if co_el else "Unknown Company"
-                        job_loc = lo_el.get_text(" ", strip=True) if lo_el else query_loc
+                    resp = None
+                    for attempt in range(backoff.max_retries):
+                        try:
+                            r = session.get(url, headers=_get_browser_headers(), timeout=15)
+                            if r.status_code == 200:
+                                backoff.reset()
+                                resp = r
+                                break
+                            elif r.status_code in (429, 403):
+                                wait = backoff.wait_seconds(attempt, r.headers.get("Retry-After"))
+                                backoff.record_failure()
+                                LOG.warning("Rate limit (HTTP %d). Waiting %.1fs before retry...", r.status_code, wait)
+                                time.sleep(wait)
+                                if backoff.exhausted:
+                                    LOG.error("Backoff exhausted on LinkedIn guest API. Skipping %s (%s).", term, mode["name"])
+                                    break
+                            else:
+                                LOG.warning("LinkedIn returned HTTP %d for %s (%s)", r.status_code, term, mode["name"])
+                                time.sleep(2.0)
+                        except Exception as err:
+                            LOG.warning("Network error querying LinkedIn: %s", err)
+                            time.sleep(backoff.wait_seconds(attempt))
 
-                        raw_href = li_el.get("href", "")
-                        clean_href = raw_href.split("?")[0]
-                        m = re.search(r"(\d{8,12})", clean_href)
-                        job_id = m.group(1) if m else clean_href.split("-")[-1].split("/")[-1]
-
-                        if not job_id or job_id in seen_ids:
-                            continue
-                        seen_ids.add(job_id)
-
-                        canonical_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
-
-                        posted_str = ""
-                        posted_iso = ""
-                        if ti_el:
-                            posted_str = ti_el.get_text(strip=True)
-                            posted_iso = ti_el.get("datetime", "")
-
-                        age = _parse_linkedin_age(posted_str)
-                        if age is None and posted_iso:
-                            parsed_dt = _parse_linkedin_timestamp(posted_iso)
-                            if parsed_dt:
-                                age = max(0.0, (datetime.now(timezone.utc) - parsed_dt).total_seconds() / 3600.0)
-
-                        if age is not None and age >= float(hours):
-                            continue
-
-                        age_val = round(age, 3) if age is not None else 0.0
-                        badge = f"<1h ago ({max(1, round(age_val * 60))}m)" if age_val < 1 else f"{age_val:.1f}h ago"
-
-                        workplace = "Remote" if is_remote_loc else "Not specified"
-
-                        rec = {
-                            "job_id": job_id,
-                            "source": "LinkedIn",
-                            "job_url": canonical_url,
-                            "apply_url": canonical_url,
-                            "title": title,
-                            "company": company,
-                            "location": job_loc,
-                            "description": "",
-                            "workplace_type": workplace,
-                            "posted_time": posted_str,
-                            "posted_iso": posted_iso,
-                            "scraped_at": datetime.now(timezone.utc).isoformat(),
-                            "age_hours": age_val,
-                            "freshness_badge": badge,
-                        }
-                        _extract_experience_range(rec)
-                        collected.append(rec)
-                        term_jobs += 1
-
-                        if target_count > 0 and len(collected) >= target_count:
-                            break
-                    except Exception as card_err:
-                        LOG.debug("Error parsing card: %s", card_err)
+                    if not resp or not resp.text.strip():
+                        consecutive_empty += 1
+                        start += 10
                         continue
 
-                start += max(len(cards), 10)
-                time.sleep(delay + random.uniform(0.5, 1.2))
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    cards = soup.find_all("li")
+                    if not cards:
+                        consecutive_empty += 1
+                        start += 10
+                        continue
+
+                    consecutive_empty = 0
+                    for card in cards:
+                        try:
+                            t_el = card.find("h3", class_="base-search-card__title") or card.find("h3")
+                            co_el = card.find("h4", class_="base-search-card__subtitle") or card.find("h4")
+                            lo_el = card.find("span", class_="job-search-card__location")
+                            ti_el = card.find("time")
+                            li_el = card.find("a", class_="base-card__full-link") or card.find("a", href=True)
+
+                            if not (t_el and li_el):
+                                continue
+
+                            title = t_el.get_text(" ", strip=True)
+                            company = co_el.get_text(" ", strip=True) if co_el else "Unknown Company"
+                            job_loc = lo_el.get_text(" ", strip=True) if lo_el else query_loc
+
+                            raw_href = li_el.get("href", "")
+                            clean_href = raw_href.split("?")[0]
+                            m = re.search(r"(\d{8,12})", clean_href)
+                            job_id = m.group(1) if m else clean_href.split("-")[-1].split("/")[-1]
+
+                            if not job_id or job_id in seen_ids:
+                                continue
+                            seen_ids.add(job_id)
+
+                            canonical_url = f"https://www.linkedin.com/jobs/view/{job_id}/"
+
+                            posted_str = ""
+                            posted_iso = ""
+                            if ti_el:
+                                posted_str = ti_el.get_text(strip=True)
+                                posted_iso = ti_el.get("datetime", "")
+
+                            age = _parse_linkedin_age(posted_str)
+                            if age is None and posted_iso:
+                                parsed_dt = _parse_linkedin_timestamp(posted_iso)
+                                if parsed_dt:
+                                    age = max(0.0, (datetime.now(timezone.utc) - parsed_dt).total_seconds() / 3600.0)
+
+                            if age is not None and age >= float(hours):
+                                continue
+
+                            age_val = round(age, 3) if age is not None else 0.0
+                            badge = f"<1h ago ({max(1, round(age_val * 60))}m)" if age_val < 1 else f"{age_val:.1f}h ago"
+
+                            workplace = "Remote" if is_remote_loc else "Not specified"
+
+                            rec = {
+                                "job_id": job_id,
+                                "source": "LinkedIn",
+                                "job_url": canonical_url,
+                                "apply_url": canonical_url,
+                                "title": title,
+                                "company": company,
+                                "location": job_loc,
+                                "description": "",
+                                "workplace_type": workplace,
+                                "is_easy_apply": mode["is_easy"],
+                                "apply_type": "⚡ Easy Apply" if mode["is_easy"] else "Normal Apply",
+                                "posted_time": posted_str,
+                                "posted_iso": posted_iso,
+                                "scraped_at": datetime.now(timezone.utc).isoformat(),
+                                "age_hours": age_val,
+                                "freshness_badge": badge,
+                            }
+                            _extract_experience_range(rec)
+                            collected.append(rec)
+                            mode_jobs += 1
+
+                            if target_count > 0 and len(collected) >= target_count:
+                                break
+                        except Exception as card_err:
+                            LOG.debug("Error parsing card: %s", card_err)
+                            continue
+
+                    start += max(len(cards), 10)
+                    time.sleep(delay + random.uniform(0.4, 0.9))
 
     LOG.info("Guest scraper harvested %d initial LinkedIn job cards.", len(collected))
     return collected
@@ -940,6 +950,8 @@ def collect_jobs(
         job["workplace_type"] = str(
             job.get("workplace_type") or job.get("workplaceType") or "Not specified"
         ).strip()
+        job["is_easy_apply"] = bool(raw_item.get("is_easy_apply", False))
+        job["apply_type"] = str(raw_item.get("apply_type") or ("⚡ Easy Apply" if job["is_easy_apply"] else "Normal Apply"))
         _extract_experience_range(job)
 
         if not job["title"] or not job["location"]:
@@ -1130,16 +1142,20 @@ def filter_job_preferences(jobs: Sequence[Dict[str, Any]], enforce_title: bool =
 
 
 def html_table(jobs: Sequence[Dict[str, Any]], include_match: bool = True) -> str:
-    headers = ["Match %", "Job title", "Company", "Location", "Work mode", "Posted", "Experience", "Matched skills", "Missing skills", "Direct job link"]
+    headers = ["Match %", "Apply Type", "Job title", "Company", "Location", "Work mode", "Posted", "Experience", "Matched skills", "Missing skills", "Direct job link"]
     rows = []
     if not jobs:
         return '<p style="color:#666;margin:8px 0 18px">No jobs in this section for this run.</p>'
     for j in jobs:
         title = html.escape(str(j.get("title") or "Untitled role"))
         url = html.escape(clean_job_url(j), quote=True)
-        link = f'<a href="{url}">Open job / apply</a>' if url.startswith("https://") else "Link unavailable"
+        is_easy = bool(j.get("is_easy_apply", False))
+        apply_badge = '<span style="background:#e8f0fe;color:#1a73e8;padding:2px 6px;border-radius:4px;font-weight:bold">⚡ Easy Apply</span>' if is_easy else '<span style="color:#5f6368">Normal</span>'
+        link_text = "⚡ Easy Apply" if is_easy else "Open job / apply"
+        link = f'<a href="{url}">{link_text}</a>' if url.startswith("https://") else "Link unavailable"
         vals = [
             f"{int(j.get('skill_match_pct', 0))}%",
+            apply_badge,
             title,
             html.escape(str(j.get("company") or "Unknown")),
             html.escape(str(j.get("location") or "Not specified")),
@@ -1161,7 +1177,7 @@ def html_table(jobs: Sequence[Dict[str, Any]], include_match: bool = True) -> st
 
 
 def markdown_table(jobs: Sequence[Dict[str, Any]]) -> str:
-    headers = ["Match %", "Job title", "Company", "Location", "Work mode", "Posted", "Experience", "Matched skills", "Missing skills", "Direct application link"]
+    headers = ["Match %", "Apply Type", "Job title", "Company", "Location", "Work mode", "Posted", "Experience", "Matched skills", "Missing skills", "Direct application link"]
     lines = ["| " + " | ".join(headers) + " |", "|" + "|".join(["---"] * len(headers)) + "|"]
     if not jobs:
         return "_No jobs in this section for this run._"
@@ -1169,10 +1185,15 @@ def markdown_table(jobs: Sequence[Dict[str, Any]]) -> str:
         return str(value if value not in (None, "") else "Not specified").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
     for j in jobs:
         url = clean_job_url(j)
-        link = f"[Open job / apply]({url})" if url.startswith("https://") else "Link unavailable"
+        is_easy = bool(j.get("is_easy_apply", False))
+        apply_type = "⚡ Easy Apply" if is_easy else "Normal Apply"
+        link_text = "⚡ Easy Apply" if is_easy else "Open job / apply"
+        link = f"[{link_text}]({url})" if url.startswith("https://") else "Link unavailable"
         experience = experience_label(j)
         row = [
-            f"{int(j.get('skill_match_pct', 0))}%", cell(j.get("title") or "Untitled role"),
+            f"{int(j.get('skill_match_pct', 0))}%",
+            apply_type,
+            cell(j.get("title") or "Untitled role"),
             cell(j.get("company") or "Unknown"), cell(j.get("location")),
             cell(j.get("workplace_type")), cell(j.get("freshness_badge") or j.get("posted_time")),
             cell(experience), cell(", ".join(j.get("matched_skills", [])) or "None detected"),
@@ -1186,9 +1207,13 @@ def build_github_issue_body(matched: Sequence[Dict[str, Any]], all_scraped: Sequ
     run_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
     actor = os.environ.get("GITHUB_ACTOR", "SUKRUTH81").strip() or "SUKRUTH81"
     mention_header = f"cc @{actor}\n\n"
+    easy_count = sum(1 for j in matched if j.get("is_easy_apply"))
+    normal_count = len(matched) - easy_count
+    ratio_str = f"**Apply Mix (60%+ Matches):** ⚡ {easy_count} Easy Apply ({round(easy_count/len(matched)*100) if matched else 0}%) | 🔗 {normal_count} Normal Apply\n\n"
     return f"""# Job Match Report\n\n{mention_header}**Run time:** {run_time}  
 **Skill score:** matching candidate skills / distinct technical skills detected in the job description × 100.  
-**Notification rule:** this issue is created only when at least one new job scores 60% or higher.\n\n## 1. Jobs matching 60% or more ({len(matched)})\n\nSorted by match percentage, highest first.\n\n{markdown_table(matched)}\n\n## 2. All newly discovered jobs scraped ({len(all_scraped)})\n\nIncludes every new unique job collected in this run, including jobs below 60%. Sorted highest first.\n\n{markdown_table(all_scraped)}\n\n---\nPlease verify eligibility and posting details on the employer's application page.\n"""
+**Filters:** Full-time only | Hyderabad, Bengaluru, Chennai & India Remote | 80% Easy Apply : 20% Normal Apply  
+**Notification rule:** this issue is created only when at least one new job scores 60% or higher.\n\n{ratio_str}## 1. Jobs matching 60% or more ({len(matched)})\n\nSorted by match percentage and Easy Apply priority.\n\n{markdown_table(matched)}\n\n## 2. All newly discovered jobs scraped ({len(all_scraped)})\n\nIncludes every new unique job collected in this run, including jobs below 60%. Sorted highest first.\n\n{markdown_table(all_scraped)}\n\n---\nPlease verify eligibility and posting details on the employer's application page.\n"""
 
 
 def create_github_issue(title: str, body: str) -> None:
@@ -1290,7 +1315,7 @@ def create_excel(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[s
     path = REPORT_DIR / f"job_match_report_{stamp}.xlsx"
     wb = Workbook()
     wb.remove(wb.active)
-    columns = ["Match %", "Job Title", "Company", "Location", "Workplace", "Posted", "Min Experience", "Matched Skills", "Missing Skills", "Job URL"]
+    columns = ["Match %", "Apply Type", "Job Title", "Company", "Location", "Workplace", "Posted", "Min Experience", "Matched Skills", "Missing Skills", "Job URL"]
     for sheet_name, data in (("60%+ Matches", matched), ("All Scraped", all_scraped)):
         ws = wb.create_sheet(sheet_name)
         ws.append(columns)
@@ -1299,20 +1324,22 @@ def create_excel(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[s
             cell.fill = PatternFill("solid", fgColor="17365D")
             cell.alignment = Alignment(horizontal="center")
         for j in data:
+            is_easy = bool(j.get("is_easy_apply", False))
             ws.append([
-                int(j.get("skill_match_pct", 0)), j.get("title", ""), j.get("company", ""),
+                int(j.get("skill_match_pct", 0)), "⚡ Easy Apply" if is_easy else "Normal Apply",
+                j.get("title", ""), j.get("company", ""),
                 j.get("location", ""), j.get("workplace_type", ""),
                 j.get("freshness_badge", j.get("posted_time", "")),
                 experience_label(j), ", ".join(j.get("matched_skills", [])),
                 ", ".join(j.get("missing_skills", [])), clean_job_url(j),
             ])
-            cell = ws.cell(ws.max_row, 10)
+            cell = ws.cell(ws.max_row, 11)
             if cell.value and str(cell.value).startswith("https://"):
                 cell.hyperlink = cell.value
                 cell.style = "Hyperlink"
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = ws.dimensions
-        widths = [10, 32, 24, 25, 14, 18, 16, 38, 38, 55]
+        widths = [10, 16, 32, 24, 25, 14, 18, 16, 38, 38, 55]
         for idx, width in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(idx)].width = width
     wb.save(path)
@@ -1365,10 +1392,10 @@ def main() -> int:
             save_seen_ids(seen_ids)
             return 0
 
-    new_jobs.sort(key=lambda j: (int(j.get("skill_match_pct", 0)), str(j.get("title", "")).lower()), reverse=True)
+    new_jobs.sort(key=lambda j: (int(j.get("skill_match_pct", 0)), 1 if j.get("is_easy_apply") else 0, str(j.get("title", "")).lower()), reverse=True)
     matched = [j for j in new_jobs if int(j.get("skill_match_pct", 0)) >= args.min_match]
-    matched.sort(key=lambda j: (int(j.get("skill_match_pct", 0)), str(j.get("title", "")).lower()), reverse=True)
-    all_scraped = sorted(new_jobs, key=lambda j: (int(j.get("skill_match_pct", 0)), str(j.get("title", "")).lower()), reverse=True)
+    matched.sort(key=lambda j: (int(j.get("skill_match_pct", 0)), 1 if j.get("is_easy_apply") else 0, str(j.get("title", "")).lower()), reverse=True)
+    all_scraped = sorted(new_jobs, key=lambda j: (int(j.get("skill_match_pct", 0)), 1 if j.get("is_easy_apply") else 0, str(j.get("title", "")).lower()), reverse=True)
 
     # Always generate the report for new LinkedIn records; only 60%+ matches notify.
     report_path = create_excel(matched, all_scraped)
