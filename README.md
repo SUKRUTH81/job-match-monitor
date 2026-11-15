@@ -12,27 +12,31 @@ This package scores collected jobs against the candidate skill profile, keeps a 
 - Every row includes a direct application link, score, location/work mode, experience estimate, matched skills, and other detected technical skills.
 - An Excel workbook is uploaded as a workflow artifact with `60%+ Matches` and `All Scraped` sheets.
 
-## Target Job Roles & Strict Title Filtering
+## Target Job Roles, Strict Title & Full-Time Filtering
 
-The monitor strictly searches for and filters by the candidate's target job titles:
+The monitor strictly searches for and filters by the candidate's target job titles and full-time employment:
 - **AI Engineer**: AI Engineer, GenAI Engineer, LLM Engineer, Machine Learning Engineer, Artificial Intelligence Engineer.
 - **Software Engineer**: Software Engineer, Software Developer, SDE (I/II/III), Member of Technical Staff.
 - **Python Backend**: Python Backend Developer, Backend Engineer (Python).
 - **Python Full Stack**: Python Full Stack Developer, Full Stack Engineer (Python).
 - **Python Jobs**: Python Developer, Python Programmer, Django/FastAPI Developer.
 
-*Non-software, QA, testing (SDET, QA Engineer), system performance, hardware, and administrative roles are strictly excluded.*
+**Strict Filtering Rules:**
+- **Full-Time Only**: Internships, trainees, apprentices, contractors, freelancers, part-time, and task evaluators/raters are strictly excluded.
+- **Location Restrictions**: Strictly **Hyderabad**, **Bengaluru/Bangalore**, and **Chennai** (any work mode: Onsite, In-Office, Hybrid, Remote) and **India Remote**. Worldwide remote, international remote, and onsite/hybrid roles in other cities (Pune, Noida, Gurgaon, Mumbai) are strictly excluded.
+- **Non-Software Roles Excluded**: QA, testing (SDET, QA Engineer), system performance, hardware, and administrative roles are excluded.
 
 ## Schedule
 
-The workflow triggers once each hour between **8:00 AM and 11:00 PM IST** (02:30 UTC to 17:30 UTC):
+The workflow triggers hourly between **8:05 AM and 11:05 PM IST** (02:35 UTC to 17:35 UTC):
 
 ```yaml
 on:
   schedule:
-    # Hourly triggers from 8:00 AM to 11:00 PM IST (02:30 UTC to 17:30 UTC)
-    - cron: '30 2-17 * * *'
+    # Hourly triggers from 8:05 AM to 11:05 PM IST (02:35 UTC to 17:35 UTC)
+    - cron: '35 2-17 * * *'
   workflow_dispatch:
+```
 ```
 
 Each run scans jobs posted within the **last 1 hour** (`--hours 1`), deduplicates against previously seen job IDs, creates a GitHub Issue when matches reach 60%+, and optionally emails the HTML report with the attached Excel workbook to **`sukruth1435@gmail.com`** and **`akhilarohithayepuri@gmail.com`**.

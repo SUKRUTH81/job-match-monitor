@@ -308,7 +308,31 @@ EXCLUDED_TITLE_KEYWORDS = (
     r"\btechnical writer\b",
     r"\brecruiter\b",
     r"\bhr\b",
+    # Full-time only: exclude internships, trainees, contractors, evaluators, part-time
+    r"\bintern\b",
+    r"\binternship\b",
+    r"\binterns\b",
+    r"\btrainee\b",
+    r"\bapprentice\b",
+    r"\bpart[- ]time\b",
+    r"\bcontract\b",
+    r"\bcontractor\b",
+    r"\bfreelance\b",
+    r"\bevaluator\b",
+    r"\brater\b",
+    r"\bannotat(?:or|ion)\b",
 )
+
+
+def employment_is_eligible(job: Dict[str, Any]) -> bool:
+    """Ensure the role is strictly full-time (no internships, contract, or part-time)."""
+    emp = str(job.get("employment_type") or "").lower().strip()
+    if emp:
+        disallowed = ("intern", "part-time", "contract", "temporary", "volunteer")
+        if any(d in emp for d in disallowed):
+            return False
+    return True
+
 
 
 def title_is_eligible(job: Dict[str, Any]) -> bool:
@@ -562,7 +586,7 @@ def scrape_linkedin_guest_jobs(
             while term_jobs < per_term_cap and consecutive_empty < 2:
                 url = (
                     f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-                    f"?keywords={encoded_kw}&location={encoded_loc}&f_TPR={f_tpr}{remote_param}&start={start}"
+                    f"?keywords={encoded_kw}&location={encoded_loc}&f_TPR={f_tpr}&f_JT=F{remote_param}&start={start}"
                 )
 
                 resp = None
@@ -1098,6 +1122,7 @@ def filter_job_preferences(jobs: Sequence[Dict[str, Any]], enforce_title: bool =
             source_is_allowed(job)
             and location_is_eligible(job)
             and experience_is_eligible(job)
+            and employment_is_eligible(job)
             and (not enforce_title or title_is_eligible(job))
         ):
             eligible.append(job)
@@ -1319,7 +1344,7 @@ def main() -> int:
         no_jd=args.no_jd,
     )
     all_found = filter_job_preferences(collected)
-    LOG.info("Collected %d jobs; %d meet location, 2-year experience, and target title eligibility.", len(collected), len(all_found))
+    LOG.info("Collected %d jobs; %d meet location, 2-year experience, full-time, and target title eligibility.", len(collected), len(all_found))
     for job in all_found:
         score_job(job)
         job["job_url"] = clean_job_url(job)
