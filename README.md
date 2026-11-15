@@ -114,9 +114,11 @@ If you wish to route LinkedIn requests through a dedicated proxy, add your proxy
 
 ## Search preferences
 
-- **India locations:** Hyderabad, Chennai, and Bengaluru. Onsite, hybrid, and remote arrangements are all acceptable in these cities.
-- **Remote outside these cities:** Include remote roles explicitly open to applicants in India, plus genuinely worldwide/global remote roles. Exclude remote jobs restricted to another country or region.
-- **Experience:** The candidate has 2+ years. Include roles that say 2+ years, 2 years, or a stated range containing 2 years (for example, 1–3 or 2–4 years). Include postings that explicitly accept any experience level or explicitly state that 2 years may be considered. Do not reject a role merely because the top of its stated range is above 2. Exclude a strict minimum above 2 when no flexibility is stated. If experience is not specified, do not exclude solely for that reason.
+- **Locations:** Strictly Hyderabad, Bengaluru ("bgl"), Chennai (all work modes: Onsite, In-Office, Hybrid, Remote) and India Remote. Worldwide remote and other cities (Pune, Noida, Mumbai) are strictly excluded.
+- **Employment type:** Strictly full-time jobs only (excludes internships, trainees, contractors, evaluators, and part-time).
+- **Apply type ratio:** 80% Easy Apply (`f_AL=true`) and 20% Normal Apply jobs.
+- **Experience (YOE):** Configured for candidate's 2+ years background (default ceiling: 5.0 years). Strictly excludes roles requiring 6+, 8+, 10+, 12+ years of experience, executive/director seniorities, and over-senior titles (Staff, Principal, Architect, SDE III/IV/V).
+- **Target roles:** AI Engineer, Software Engineer, Python Backend, Python Full Stack, Python Developer, and Python engineering jobs.
 - Keep the 24-hour posting-age rule, verifiable-posting-time requirement, 60% skill threshold for alerts, and Naukri exclusion from the standing search criteria.
 
 ## Candidate profile source

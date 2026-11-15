@@ -270,7 +270,7 @@ ALLOWED_TITLE_PATTERNS = (
     r"\bsoftware\s+(?:development\s+)?engineer\b",
     r"\bsoftware\s+developer\b",
     r"\bsde\b",
-    r"\bsde[- ]?[123iIvV]+\b",
+    r"\bsde[- ]?(?:1|2|i|ii)\b",
     r"\bmember of technical staff\b",
     r"\bmts\b",
     # Python Backend
@@ -321,6 +321,13 @@ EXCLUDED_TITLE_KEYWORDS = (
     r"\bevaluator\b",
     r"\brater\b",
     r"\bannotat(?:or|ion)\b",
+    # Over-senior roles (requires 5-15+ years experience: Staff, Principal, Director, VP, Architect, etc.)
+    r"\b(?:staff|principal|distinguished)\b",
+    r"\barchitect\b",
+    r"\b(?:director|assoc(?:iate)?\.?\s*director|vp|vice[- ]president|head\s+of)\b",
+    r"\b(?:engineering|technical)\s+manager\b",
+    r"\b(?:sde|swe|engineer|developer)[- ]?(?:3|4|5|6|iii|iv|v|vi)\b",
+    r"\b(?:iii|iv|v|vi)\b",
 )
 
 
@@ -500,27 +507,55 @@ def _verified_posting_age(job: Dict[str, Any]) -> float | None:
     return base_age + elapsed
 
 
-def _extract_experience_range(job: Dict[str, Any]) -> None:
-    """Populate minimum/maximum experience from an explicit range if not already supplied."""
-    if job.get("min_experience_years") is not None or job.get("max_experience_years") is not None:
+EXP_RANGE_PATTERN = re.compile(
+    r"\b(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*(?:\+\s*)?(?:[- ]?(?:years?|yrs?)(?:[’\']s)?)\b",
+    re.I,
+)
+EXP_MIN_PATTERN = re.compile(
+    r"(?:(?:minimum|min\.?|at\s+least|requires?)\s*(?:of\s*)?)(\d+(?:\.\d+)?)\s*(?:[- ]?(?:years?|yrs?)(?:[’\']s)?)",
+    re.I,
+)
+EXP_PLUS_PATTERN = re.compile(
+    r"\b(\d+(?:\.\d+)?)\s*\+\s*(?:[- ]?(?:years?|yrs?)(?:[’\']s)?)\b",
+    re.I,
+)
+EXP_YEARS_PATTERN = re.compile(
+    r"\b(\d+(?:\.\d+)?)\s*[- ]?(?:years?|yrs?)(?:[’\']s)?\s+(?:of\s+)?experience\b",
+    re.I,
+)
+EXP_MAX_PATTERN = re.compile(
+    r"(?:(?:maximum|max\.?|up\s+to|no\s+more\s+than)\s*)(\d+(?:\.\d+)?)\s*(?:[- ]?(?:years?|yrs?)(?:[’\']s)?)",
+    re.I,
+)
+
+
+def _extract_experience_range(job: Dict[str, Any], overwrite: bool = False) -> None:
+    """Populate minimum/maximum experience from title and description."""
+    if not overwrite and (job.get("min_experience_years") is not None or job.get("max_experience_years") is not None):
         return
     blob = " ".join(str(job.get(k) or "") for k in (
         "title", "description", "experience_requirement", "experience",
     ))
-    range_match = re.search(
-        r"\b(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*(?:\+\s*)?(?:years?|yrs?)\b",
-        blob, re.I,
-    )
+    if not blob.strip():
+        return
+
+    range_match = EXP_RANGE_PATTERN.search(blob)
     if range_match:
         job["min_experience_years"] = float(range_match.group(1))
         job["max_experience_years"] = float(range_match.group(2))
+        job["experience_requirement"] = f"{int(job['min_experience_years'])}-{int(job['max_experience_years'])} yrs"
         return
-    minimum_match = re.search(
-        r"\b(?:minimum|min\.?|at least)?\s*(\d+(?:\.\d+)?)\s*\+\s*(?:years?|yrs?)\b",
-        blob, re.I,
-    )
-    if minimum_match:
-        job["min_experience_years"] = float(minimum_match.group(1))
+
+    min_match = EXP_MIN_PATTERN.search(blob) or EXP_PLUS_PATTERN.search(blob) or EXP_YEARS_PATTERN.search(blob)
+    if min_match:
+        job["min_experience_years"] = float(min_match.group(1))
+        job["experience_requirement"] = f"{int(job['min_experience_years'])}+ yrs"
+
+    max_match = EXP_MAX_PATTERN.search(blob)
+    if max_match:
+        job["max_experience_years"] = float(max_match.group(1))
+        if job.get("min_experience_years") is None:
+            job["experience_requirement"] = f"Up to {int(job['max_experience_years'])} yrs"
 
 
 # ---------------------------------------------------------------------------
@@ -806,7 +841,7 @@ def _parse_jd_html_into_job(job: Dict[str, Any], html_text: str, hours: float = 
             else:
                 job["freshness_badge"] = f"{age:.1f}h ago"
 
-    _extract_experience_range(job)
+    _extract_experience_range(job, overwrite=True)
 
 
 def enrich_linkedin_jds(
@@ -952,7 +987,7 @@ def collect_jobs(
         ).strip()
         job["is_easy_apply"] = bool(raw_item.get("is_easy_apply", False))
         job["apply_type"] = str(raw_item.get("apply_type") or ("⚡ Easy Apply" if job["is_easy_apply"] else "Normal Apply"))
-        _extract_experience_range(job)
+        _extract_experience_range(job, overwrite=True)
 
         if not job["title"] or not job["location"]:
             LOG.debug("Skipping LinkedIn record missing title or location (%s).", job_id)
@@ -989,74 +1024,75 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
-def experience_is_eligible(job: Dict[str, Any]) -> bool:
-    """Keep roles whose stated experience band contains 2 years, or is flexible/unspecified."""
-    target_years = 2.0
+def experience_is_eligible(
+    job: Dict[str, Any],
+    candidate_yoe: float = 2.0,
+    min_allowed_yoe: float = 0.0,
+    max_allowed_yoe: float = 5.0,
+) -> bool:
+    """Validate job experience requirement against candidate profile (default 2+ YOE):
+    - Filters out senior roles requiring experience > max_allowed_yoe (e.g., 6+, 8+, 10+ years).
+    - Filters out executive / director seniorities.
+    - Accepts roles with stated experience containing candidate_yoe or within min_allowed_yoe..max_allowed_yoe.
+    - Unspecified experience is retained as flexible.
+    """
+    seniority = str(job.get("seniority_level") or "").strip().lower()
+    if any(s in seniority for s in ("director", "executive")):
+        return False
+
+    _extract_experience_range(job)
     minimum = _as_float(job.get("min_experience_years"))
     maximum = _as_float(job.get("max_experience_years"))
     blob = " ".join(str(job.get(k) or "") for k in (
         "title", "description", "experience_requirement", "experience",
     )).lower()
 
+    flexible_phrases = (
+        "any years of experience", "all experience levels", "experience is flexible",
+        "flexible on experience", "open to candidates with 2 years",
+        "consider candidates with 2 years", "less experience will be considered",
+        "equivalent practical experience", "equivalent hands-on experience",
+    )
+    has_flexible = any(phrase in blob for phrase in flexible_phrases)
+
+    # 1. Minimum explicitly exceeds our ceiling (e.g. 6+, 8+, 10+ years)
+    if minimum is not None and minimum > max_allowed_yoe:
+        return has_flexible
+
+    # 2. Both minimum and maximum are specified (e.g. 1-3, 2-4, 3-5, 6-10)
     if minimum is not None and maximum is not None:
-        if minimum <= target_years <= maximum:
+        if (minimum <= candidate_yoe <= maximum) or (minimum <= max_allowed_yoe):
             return True
-        flexible_phrases = (
-            "any years of experience", "all experience levels", "experience is flexible",
-            "flexible on experience", "open to candidates with 2 years",
-            "consider candidates with 2 years", "less experience will be considered",
-            "equivalent practical experience", "equivalent hands-on experience",
-        )
-        return any(phrase in blob for phrase in flexible_phrases)
+        return has_flexible
+
+    # 3. Only minimum is specified
     if minimum is not None:
-        if minimum <= target_years:
+        if minimum <= max_allowed_yoe:
             return True
-        flexible_phrases = (
-            "any years of experience", "all experience levels", "experience is flexible",
-            "flexible on experience", "open to candidates with 2 years",
-            "consider candidates with 2 years", "less experience will be considered",
-            "equivalent practical experience", "equivalent hands-on experience",
-        )
-        return any(phrase in blob for phrase in flexible_phrases)
+        return has_flexible
+
+    # 4. Only maximum is specified
     if maximum is not None:
-        return maximum >= target_years
+        return maximum >= candidate_yoe or has_flexible
 
-    # Parse common explicit ranges in the posting, e.g. "1-3 years" or "1 to 3 yrs".
-    range_match = re.search(
-        r"\b(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*(?:\+\s*)?(?:years?|yrs?)\b",
-        blob, re.I,
-    )
-    if range_match:
-        lo, hi = float(range_match.group(1)), float(range_match.group(2))
-        if lo <= target_years <= hi:
+    # 5. Direct fallback regex in blob
+    rm = EXP_RANGE_PATTERN.search(blob)
+    if rm:
+        lo, hi = float(rm.group(1)), float(rm.group(2))
+        if lo > max_allowed_yoe:
+            return has_flexible
+        if (lo <= candidate_yoe <= hi) or (lo <= max_allowed_yoe):
             return True
-        flexible_phrases = (
-            "any years of experience", "all experience levels", "experience is flexible",
-            "flexible on experience", "open to candidates with 2 years",
-            "consider candidates with 2 years", "less experience will be considered",
-        )
-        return any(phrase in blob for phrase in flexible_phrases)
+        return has_flexible
 
-    # Explicit minimum-only requirements above 2 years need a flexibility statement.
-    min_match = re.search(
-        r"(?:minimum|min\.?|at least)\s*(\d+(?:\.\d+)?)\s*(?:\+\s*)?(?:years?|yrs?)",
-        blob, re.I,
-    )
-    if not min_match:
-        min_match = re.search(r"\b(\d+(?:\.\d+)?)\s*\+\s*(?:years?|yrs?)\b", blob, re.I)
-    if not min_match:
-        min_match = re.search(
-            r"\b(\d+(?:\.\d+)?)\s*(?:years?|yrs?)\s+(?:of\s+)?experience\b",
-            blob, re.I,
-        )
-    if min_match and float(min_match.group(1)) > target_years:
-        flexible_phrases = (
-            "any years of experience", "all experience levels", "experience is flexible",
-            "flexible on experience", "open to candidates with 2 years",
-            "consider candidates with 2 years", "less experience will be considered",
-        )
-        return any(phrase in blob for phrase in flexible_phrases)
-    return True  # No usable experience restriction was supplied.
+    mm = EXP_MIN_PATTERN.search(blob) or EXP_PLUS_PATTERN.search(blob) or EXP_YEARS_PATTERN.search(blob)
+    if mm:
+        val = float(mm.group(1))
+        if val > max_allowed_yoe:
+            return has_flexible
+        return True
+
+    return True
 
 
 def location_is_eligible(job: Dict[str, Any]) -> bool:
@@ -1127,13 +1163,19 @@ def source_is_allowed(job: Dict[str, Any]) -> bool:
     return ("linkedin" in source or bool(url)) and url.startswith("https://www.linkedin.com/jobs/view/")
 
 
-def filter_job_preferences(jobs: Sequence[Dict[str, Any]], enforce_title: bool = True) -> List[Dict[str, Any]]:
+def filter_job_preferences(
+    jobs: Sequence[Dict[str, Any]],
+    enforce_title: bool = True,
+    candidate_yoe: float = 2.0,
+    min_yoe: float = 0.0,
+    max_yoe: float = 5.0,
+) -> List[Dict[str, Any]]:
     eligible = []
     for job in jobs:
         if (
             source_is_allowed(job)
             and location_is_eligible(job)
-            and experience_is_eligible(job)
+            and experience_is_eligible(job, candidate_yoe=candidate_yoe, min_allowed_yoe=min_yoe, max_allowed_yoe=max_yoe)
             and employment_is_eligible(job)
             and (not enforce_title or title_is_eligible(job))
         ):
@@ -1355,6 +1397,9 @@ def main() -> int:
     parser.add_argument("--source", choices=["auto", "guest", "file"], default="auto",
                         help="Intake source: 'auto' (live guest scraper + file fallback), 'guest' (live scraper), or 'file' (JSON only)")
     parser.add_argument("--proxy", type=str, default=None, help="HTTP/HTTPS/SOCKS proxy URL (or set via LINKEDIN_PROXY / HTTPS_PROXY env)")
+    parser.add_argument("--candidate-yoe", type=float, default=2.0, help="Candidate years of experience (default 2.0)")
+    parser.add_argument("--min-yoe", type=float, default=0.0, help="Minimum acceptable job YOE (default 0.0)")
+    parser.add_argument("--max-yoe", type=float, default=5.0, help="Maximum acceptable job YOE (default 5.0)")
     parser.add_argument("--keywords", type=str, default=None, help="Optional comma-separated search terms override")
     parser.add_argument("--location", type=str, default=None, help="Optional comma-separated search locations override")
     parser.add_argument("--no-jd", action="store_true", help="Skip full JD enrichment (listing cards only)")
@@ -1371,8 +1416,16 @@ def main() -> int:
         location=args.location,
         no_jd=args.no_jd,
     )
-    all_found = filter_job_preferences(collected)
-    LOG.info("Collected %d jobs; %d meet location, 2-year experience, full-time, and target title eligibility.", len(collected), len(all_found))
+    all_found = filter_job_preferences(
+        collected,
+        candidate_yoe=args.candidate_yoe,
+        min_yoe=args.min_yoe,
+        max_yoe=args.max_yoe,
+    )
+    LOG.info(
+        "Collected %d jobs; %d meet location, %.1f-year experience (range %.1f-%.1f), full-time, and target title eligibility.",
+        len(collected), len(all_found), args.candidate_yoe, args.min_yoe, args.max_yoe,
+    )
     for job in all_found:
         score_job(job)
         job["job_url"] = clean_job_url(job)

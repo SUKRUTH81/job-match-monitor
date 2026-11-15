@@ -15,6 +15,18 @@ on:
         description: 'Optional comma-separated search terms (leave empty for default AI/Software/Python terms)'
         required: false
         default: ''
+      candidate_yoe:
+        description: 'Candidate years of experience (default 2.0)'
+        required: false
+        default: '2.0'
+      min_yoe:
+        description: 'Minimum acceptable YOE'
+        required: false
+        default: '0.0'
+      max_yoe:
+        description: 'Maximum acceptable YOE (ceiling)'
+        required: false
+        default: '5.0'
       force_notify:
         description: 'Force notification issue creation even if jobs were previously seen'
         type: boolean
@@ -81,7 +93,10 @@ jobs:
           if [ "${{ inputs.force_notify }}" = "true" ]; then
             FORCE_ARG="--force-notify"
           fi
-          python job_match_runner.py --hours $HOURS --target-count 0 --min-match 60 $KW_ARG $FORCE_ARG
+          CANDIDATE_YOE="${{ inputs.candidate_yoe || '2.0' }}"
+          MIN_YOE="${{ inputs.min_yoe || '0.0' }}"
+          MAX_YOE="${{ inputs.max_yoe || '5.0' }}"
+          python job_match_runner.py --hours $HOURS --target-count 0 --min-match 60 --candidate-yoe $CANDIDATE_YOE --min-yoe $MIN_YOE --max-yoe $MAX_YOE $KW_ARG $FORCE_ARG
 
       - name: Save seen-job history
         if: success()
