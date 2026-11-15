@@ -15,6 +15,11 @@ on:
         description: 'Optional comma-separated search terms (leave empty for default AI/Software/Python terms)'
         required: false
         default: ''
+      force_notify:
+        description: 'Force notification issue creation even if jobs were previously seen'
+        type: boolean
+        required: false
+        default: false
   push:
     paths:
       - 'data/linkedin_jobs.json'
@@ -72,7 +77,11 @@ jobs:
           if [ -n "${{ inputs.keywords }}" ]; then
             KW_ARG="--keywords ${{ inputs.keywords }}"
           fi
-          python job_match_runner.py --hours $HOURS --target-count 0 --min-match 60 $KW_ARG
+          FORCE_ARG=""
+          if [ "${{ inputs.force_notify }}" = "true" ]; then
+            FORCE_ARG="--force-notify"
+          fi
+          python job_match_runner.py --hours $HOURS --target-count 0 --min-match 60 $KW_ARG $FORCE_ARG
 
       - name: Save seen-job history
         if: success()

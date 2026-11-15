@@ -1331,6 +1331,7 @@ def main() -> int:
     parser.add_argument("--keywords", type=str, default=None, help="Optional comma-separated search terms override")
     parser.add_argument("--location", type=str, default=None, help="Optional comma-separated search locations override")
     parser.add_argument("--no-jd", action="store_true", help="Skip full JD enrichment (listing cards only)")
+    parser.add_argument("--force-notify", action="store_true", help="Force report and notification generation even if jobs were previously seen")
     args = parser.parse_args()
 
     collected = collect_jobs(
@@ -1356,9 +1357,13 @@ def main() -> int:
     LOG.info("Collected %d unique jobs; %d are newly discovered.", len(all_found), len(new_jobs))
 
     if not new_jobs:
-        LOG.info("No new jobs. No GitHub notification created.")
-        save_seen_ids(seen_ids)
-        return 0
+        if args.force_notify and all_found:
+            LOG.info("--force-notify active: generating report with all eligible matching jobs.")
+            new_jobs = list(all_found)
+        else:
+            LOG.info("No new jobs. No GitHub notification created.")
+            save_seen_ids(seen_ids)
+            return 0
 
     new_jobs.sort(key=lambda j: (int(j.get("skill_match_pct", 0)), str(j.get("title", "")).lower()), reverse=True)
     matched = [j for j in new_jobs if int(j.get("skill_match_pct", 0)) >= args.min_match]
