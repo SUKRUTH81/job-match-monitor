@@ -2,15 +2,16 @@ name: Job Match Monitor
 
 on:
   schedule:
-    # Triggers hourly from 8:05 AM to 11:05 PM IST (02:35 UTC to 17:35 UTC)
-    # Using minute 35 avoids GitHub queue starvation/drops at minute 0 and 30
-    - cron: '35 2-17 * * *'
+    # Hourly runs across daytime & evening IST (02:00 to 17:30 UTC = 7:30 AM to 11:00 PM IST)
+    # Dual cron schedule ensures resilience against GitHub runner queue delays
+    - cron: '0 2-17 * * *'
+    - cron: '30 2-17 * * *'
   workflow_dispatch:
     inputs:
       hours:
-        description: 'Posting age window in hours'
+        description: 'Posting age window in hours (strict 1 hour)'
         required: false
-        default: '2'
+        default: '1'
       keywords:
         description: 'Optional comma-separated search terms (leave empty for default AI/Software/Python terms)'
         required: false
@@ -84,7 +85,7 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           JOB_ALERT_TO: ${{ secrets.JOB_ALERT_TO || 'sukruth1435@gmail.com, akhilarohithayepuri@gmail.com' }}
         run: |
-          HOURS="${{ inputs.hours || '2' }}"
+          HOURS="${{ inputs.hours || '1' }}"
           KW_ARG=""
           if [ -n "${{ inputs.keywords }}" ]; then
             KW_ARG="--keywords ${{ inputs.keywords }}"

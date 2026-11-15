@@ -1007,6 +1007,12 @@ def collect_jobs(
         to_enrich = eligible_target + other_jobs[:50]
         enrich_linkedin_jds(to_enrich, proxy=proxy, max_concurrency=8, hours=hours)
 
+    # 5. Strictly enforce posting age window (<= hours) after full JD timestamp verification
+    accepted = [
+        j for j in accepted
+        if _as_float(j.get("age_hours")) is not None and float(j["age_hours"]) <= float(hours)
+    ]
+
     accepted.sort(key=lambda item: float(item.get("age_hours", 999999)))
     if target_count > 0:
         accepted = accepted[:target_count]
@@ -1055,52 +1061,41 @@ def experience_is_eligible(
     )
     has_flexible = any(phrase in blob for phrase in flexible_phrases)
 
-    # 1. Stated maximum is strictly below candidate profile (e.g. freshers, 0-1 yr only)
-    if maximum is not None and maximum < candidate_yoe:
-        return has_flexible
-
-    # 2. Stated minimum strictly exceeds ceiling or range starts above candidate level (e.g. 5-8, 6+, 8+, 10+ years)
-    if minimum is not None and (minimum > max_allowed_yoe or (maximum is not None and minimum > 3.0)):
-        return has_flexible
-
-    # 3. Both minimum and maximum are specified (e.g. 0-1, 1-3, 2-4, 2-5, 3-5, 5-8):
-    # Must strictly include 2 years (minimum <= 2.0 <= maximum) or be a 2-3+ range
+    # 1. Stated range: [minimum, maximum]
+    # The range MUST strictly contain candidate_yoe (2.0): minimum <= 2.0 <= maximum.
+    # User examples: "1 to 3", "0 to 2", "0 to 3", "2 to 4", "2 to 5" all include 2.
+    # Excludes: "0 to 1" (freshers only), "3 to 5", "4 to 7", "5 to 8" (does not include 2).
     if minimum is not None and maximum is not None:
-        includes_2 = (minimum <= candidate_yoe <= maximum)
-        is_close_range = (minimum <= 3.0 and maximum <= max_allowed_yoe)
-        if includes_2 or is_close_range:
+        if minimum <= candidate_yoe <= maximum:
             return True
         return has_flexible
 
-    # 4. Only minimum is specified (e.g. 2+, 3+)
+    # 2. Stated minimum only: minimum+ (e.g. 2+, 1+, at least 2 years)
+    # Must be <= candidate_yoe (2.0). Excludes: 3+, 4+, 5+, 6+, 8+, 10+.
     if minimum is not None:
-        # 1+, 2+, 3+ accepted; 4+, 5+, 6+, 8+ rejected
-        if minimum <= 3.0:
+        if minimum <= candidate_yoe:
             return True
         return has_flexible
 
-    # 5. Only maximum is specified (e.g. up to 3 years)
+    # 3. Stated maximum only: up to maximum (e.g. up to 2 yrs, up to 3 yrs)
+    # Must be >= candidate_yoe (2.0). Excludes: up to 1 yr.
     if maximum is not None:
         return maximum >= candidate_yoe or has_flexible
 
-    # 6. Direct fallback regex in blob
+    # 4. Direct fallback regex in blob if numbers not pre-extracted
     rm = EXP_RANGE_PATTERN.search(blob)
     if rm:
         lo, hi = float(rm.group(1)), float(rm.group(2))
-        if hi < candidate_yoe or lo > max_allowed_yoe or (lo > 3.0):
-            return has_flexible
-        includes_2 = (lo <= candidate_yoe <= hi)
-        is_close_range = (lo <= 3.0 and hi <= max_allowed_yoe)
-        if includes_2 or is_close_range:
+        if lo <= candidate_yoe <= hi:
             return True
         return has_flexible
 
     mm = EXP_MIN_PATTERN.search(blob) or EXP_PLUS_PATTERN.search(blob) or EXP_YEARS_PATTERN.search(blob)
     if mm:
         val = float(mm.group(1))
-        if val > 3.0:
-            return has_flexible
-        return True
+        if val <= candidate_yoe:
+            return True
+        return has_flexible
 
     return True
 
