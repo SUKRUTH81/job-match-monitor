@@ -235,7 +235,7 @@ SKILL_PATTERNS: Dict[str, Tuple[str, ...]] = {
 }
 
 # Current search preferences supplied by the candidate:
-# Strictly: Hyderabad, Bengaluru/Bangalore, Chennai (any work mode: onsite, hybrid, in-office, remote) and India Remote.
+# Strictly: Hyderabad, Bengaluru/Bangalore, Chennai (ALL work modes: On-site, In-office, Hybrid, Remote, WFH) and India Remote.
 # Worldwide remote and other cities (e.g. Pune, Noida, Gurgaon, Mumbai) are strictly excluded.
 TARGET_CITIES = (
     "hyderabad", "secunderabad",
@@ -1036,11 +1036,20 @@ def experience_is_eligible(
     min_allowed_yoe: float = 0.0,
     max_allowed_yoe: float = 5.0,
 ) -> bool:
-    """Validate job experience requirement against candidate profile (default 2+ YOE):
-    - Filters out senior roles requiring experience > max_allowed_yoe (e.g., 6+, 8+, 10+ years).
-    - Filters out executive / director seniorities.
-    - Accepts roles with stated experience containing candidate_yoe or within min_allowed_yoe..max_allowed_yoe.
-    - Unspecified experience is retained as flexible.
+    """Strict YOE eligibility — candidate has 2 years 4 months experience (use threshold = 2.0):
+
+    ACCEPT rules (any one must be true):
+      Range  [min, max]: min <= 2.0 <= max  (covers 0-2, 1-2, 1-3, 0-3, 2-4, 2-5, 2-n)
+      Min-only  (X+)  : min <= 2.0          (covers 2+, 1+, 0+ — excludes 3+, 4+, 5+, 6+, 8+)
+      Max-only         : max >= 2.0          (covers "up to 2 yrs", "up to 3 yrs")
+      No experience stated: always accept (flexible).
+
+    REJECT rules (all applied before range checks):
+      - Seniority level = Director or Executive.
+      - Title contains Staff / Principal / Architect / Director / VP / SDE-III/IV/V.
+      - Stated min > 2.0  (e.g. 3+, 4+, 5+, 6+, 8+, 10+).
+      - Range [min, max] where both min > 2.0 AND max > 2.0  (e.g. 3-5, 4-7, 5-8).
+      - Range [0, 1] (freshers only — max=1 < 2.0).
     """
     seniority = str(job.get("seniority_level") or "").strip().lower()
     if any(s in seniority for s in ("director", "executive")):
@@ -1061,28 +1070,28 @@ def experience_is_eligible(
     )
     has_flexible = any(phrase in blob for phrase in flexible_phrases)
 
-    # 1. Stated range: [minimum, maximum]
-    # The range MUST strictly contain candidate_yoe (2.0): minimum <= 2.0 <= maximum.
-    # User examples: "1 to 3", "0 to 2", "0 to 3", "2 to 4", "2 to 5" all include 2.
-    # Excludes: "0 to 1" (freshers only), "3 to 5", "4 to 7", "5 to 8" (does not include 2).
+    # 1. Stated range [min, max]:
+    # ACCEPT if min <= 2.0 <= max.
+    # Examples accepted : 0-2, 1-2, 0-3, 1-3, 2-4, 2-5, 2-10 (any n>=2).
+    # Examples rejected : 0-1 (max=1 < 2.0), 3-5, 4-7, 5-8 (min > 2.0).
     if minimum is not None and maximum is not None:
         if minimum <= candidate_yoe <= maximum:
             return True
         return has_flexible
 
-    # 2. Stated minimum only: minimum+ (e.g. 2+, 1+, at least 2 years)
-    # Must be <= candidate_yoe (2.0). Excludes: 3+, 4+, 5+, 6+, 8+, 10+.
+    # 2. Min-only (X+): ACCEPT if min <= 2.0.
+    # Accepts: 2+, 1+, 0+. Rejects: 3+, 4+, 5+, 6+, 8+, 10+.
     if minimum is not None:
         if minimum <= candidate_yoe:
             return True
         return has_flexible
 
-    # 3. Stated maximum only: up to maximum (e.g. up to 2 yrs, up to 3 yrs)
-    # Must be >= candidate_yoe (2.0). Excludes: up to 1 yr.
+    # 3. Max-only ("up to X yrs"): ACCEPT if max >= 2.0.
+    # Accepts: up to 2 yrs, up to 3 yrs. Rejects: up to 1 yr.
     if maximum is not None:
         return maximum >= candidate_yoe or has_flexible
 
-    # 4. Direct fallback regex in blob if numbers not pre-extracted
+    # 4. Fallback regex in blob (when structured fields missing)
     rm = EXP_RANGE_PATTERN.search(blob)
     if rm:
         lo, hi = float(rm.group(1)), float(rm.group(2))
@@ -1097,14 +1106,17 @@ def experience_is_eligible(
             return True
         return has_flexible
 
+    # 5. No experience stated → accept (flexible role)
     return True
 
 
 def location_is_eligible(job: Dict[str, Any]) -> bool:
     """Strict candidate location requirements:
-    1. Hyderabad, Bengaluru/Bangalore, Chennai: All work modes allowed (On-site, In-office, Hybrid, Remote).
+    1. Hyderabad, Bengaluru/Bangalore, Chennai:
+       ALL work modes allowed — On-site, In-office, Hybrid, Remote, Work-from-home.
+       No workplace type restriction whatsoever for these 3 cities.
     2. India Remote: Remote positions specifically based in India or open to applicants in India.
-    3. Strictly excludes: Worldwide remote, outside-India remote, and onsite/hybrid in other cities.
+    3. Strictly excluded: Worldwide/global remote, outside-India remote, onsite/hybrid in other cities (Pune, Noida, Gurgaon, Mumbai, etc.).
     """
     location = str(job.get("location") or "").lower()
     workplace = str(job.get("workplace_type") or "").lower().replace("_", "-")
