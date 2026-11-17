@@ -1676,10 +1676,23 @@ def markdown_table(jobs: Sequence[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def issue_owner() -> str:
+    """GitHub login to assign and @mention on a notification issue.
+
+    Hourly runs are started by the timer workflow, so GITHUB_ACTOR is then "github-actions[bot]",
+    which cannot be assigned or notified. The repository owner is the person to tell.
+    """
+    for name in ("ISSUE_OWNER", "GITHUB_REPOSITORY_OWNER", "GITHUB_ACTOR"):
+        login = os.environ.get(name, "").strip()
+        if login and not login.endswith("[bot]"):
+            return login
+    return ""
+
+
 def build_github_issue_body(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[str, Any]]) -> str:
     run_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
-    actor = os.environ.get("GITHUB_ACTOR", "SUKRUTH81").strip() or "SUKRUTH81"
-    mention_header = f"cc @{actor}\n\n"
+    owner = issue_owner()
+    mention_header = f"cc @{owner}\n\n" if owner else ""
     easy_count = sum(1 for j in matched if j.get("is_easy_apply"))
     normal_count = len(matched) - easy_count
     ratio_str = f"**Apply Mix (60%+ Matches):** ⚡ {easy_count} Easy Apply ({round(easy_count/len(matched)*100) if matched else 0}%) | 🔗 {normal_count} Normal Apply\n\n"
@@ -1694,7 +1707,7 @@ def create_github_issue(title: str, body: str) -> str:
 
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
-    actor = os.environ.get("GITHUB_ACTOR", "").strip()
+    actor = issue_owner()
     if not token or not repo:
         LOG.warning("GITHUB_TOKEN or GITHUB_REPOSITORY not set. Skipping GitHub Issue creation.")
         return ""
@@ -1952,6 +1965,7 @@ def main() -> int:
     parser.add_argument("--no-jd", action="store_true", help="Skip full JD enrichment (listing cards only)")
     parser.add_argument("--force-notify", action="store_true", help="Force report and notification generation even if jobs were previously seen")
     args = parser.parse_args()
+    LOG.info("Notification issues will be assigned to: %s", issue_owner() or "nobody (no owner login available)")
 
     collected = collect_jobs(
         hours=args.hours,

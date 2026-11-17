@@ -68,9 +68,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          # Always the repository owner, so issue assignment and the @mention still
-          # work when the run is started by the hourly timer (actor = github-actions[bot]).
-          GITHUB_ACTOR: ${{ github.repository_owner }}
+          # Who to assign and @mention on the notification issue. Hourly runs are started
+          # by the timer, so the actor is github-actions[bot]; GITHUB_ACTOR itself cannot
+          # be overridden from a workflow, hence a separate variable.
+          ISSUE_OWNER: ${{ github.repository_owner }}
           LINKEDIN_JOBS_JSON: data/linkedin_jobs.json
           LINKEDIN_PROXY: ${{ secrets.LINKEDIN_PROXY }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
