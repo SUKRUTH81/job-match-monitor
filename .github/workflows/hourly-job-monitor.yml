@@ -1,16 +1,9 @@
 name: Job Match Monitor
 
+# Hourly runs are started by .github/workflows/hourly-timer.yml (via
+# workflow_dispatch), not by a `schedule` cron here: GitHub's cron is
+# best-effort and was skipping most hourly slots.
 on:
-  schedule:
-    # Run every hour at minute 00 IST
-    - cron: '30 * * * *'
-  #schedule:
-    # Exact hourly alignment with Indian Standard Time (IST = UTC + 5:30):
-    # In UTC, 30 minutes past the hour corresponds to the exact start of the hour in IST (:00 IST).
-    # 02:30 UTC = 08:00 AM IST, 03:30 UTC = 09:00 AM IST, ..., 17:30 UTC = 11:00 PM IST
-    #- cron: '30 2-17 * * *'
-    # Secondary mid-hour scan at :00 UTC (which is half-past every IST hour, e.g. 8:30 AM, 9:30 AM ... 10:30 PM IST)
-    #- cron: '0 3-17 * * *'
   workflow_dispatch:
     inputs:
       hours:
@@ -83,7 +76,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_ACTOR: ${{ github.actor }}
+          # Always the repository owner, so issue assignment and the @mention still
+          # work when the run is started by the hourly timer (actor = github-actions[bot]).
+          GITHUB_ACTOR: ${{ github.repository_owner }}
           LINKEDIN_JOBS_JSON: data/linkedin_jobs.json
           LINKEDIN_PROXY: ${{ secrets.LINKEDIN_PROXY }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}

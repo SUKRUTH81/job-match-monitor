@@ -28,16 +28,14 @@ The monitor strictly searches for and filters by the candidate's target job titl
 
 ## Schedule
 
-The workflow triggers hourly between **8:05 AM and 11:05 PM IST** (02:35 UTC to 17:35 UTC):
+The job monitor runs **every hour at :00 IST** (minute 30 UTC), day and night.
 
-```yaml
-on:
-  schedule:
-    # Hourly triggers from 8:05 AM to 11:05 PM IST (02:35 UTC to 17:35 UTC)
-    - cron: '35 2-17 * * *'
-  workflow_dispatch:
-```
-```
+GitHub's `schedule` cron is best-effort and was skipping most hourly slots, so the monitor is not started by a cron. Instead:
+
+- **`.github/workflows/hourly-timer.yml`** keeps time. Each run waits 55 minutes in the `hourly-timer` environment (a wait timer, which uses no runner minutes), sleeps until minute 30 UTC, starts the job monitor, and then starts the next timer run. There is always one "Hourly Timer" run in the *Waiting* state - that is normal.
+- **`.github/workflows/timer-watchdog.yml`** is a safety net. If the timer chain ever stops, it starts the monitor once and restarts the chain.
+
+To start the chain by hand, run the **Timer Watchdog** workflow from the Actions tab. To stop the hourly runs, cancel the waiting **Hourly Timer** run and disable the **Timer Watchdog** workflow. To change the minute, edit `TARGET_MINUTE` in `hourly-timer.yml`.
 
 Each run scans jobs posted within the **last 1 hour** (`--hours 1`), deduplicates against previously seen job IDs, creates a GitHub Issue when matches reach 60%+, and optionally emails the HTML report with the attached Excel workbook to **`sukruth1435@gmail.com`** and **`akhilarohithayepuri@gmail.com`**.
 
