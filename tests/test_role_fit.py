@@ -59,6 +59,8 @@ for title, want in [
     ("Tech & Data - AI Governance - Associate 2", "Not a developer role"),
     ("Backend Support Engineer", "Not a developer role"),
     ("Python Trainer", "Not a developer role"),
+    ("Azure AI Cloud Engineer", "Different stack: DevOps / infrastructure"),
+    ("Senior Software Engineer (ERP Developer)", "Different stack: Salesforce / SAP / ERP"),
     ("Data Engineer - Python", "Different stack: Data engineering / BI"),
 ]:
     got = m.role_mismatch(job(title, PY))
@@ -124,6 +126,28 @@ cases = [
      "WSP is seeking a technically credible Product Manager to lead AI product delivery. Python and LLM knowledge.", m.NOT_DEVELOPER_ROLE),
     ("the description says it is a data engineer job", "Software Engineer",
      "Join us as a Data Engineer Expert to build pipelines in Python.", "Different stack: Data engineering / BI"),
+    # Patterns found on hand-labelled postings the filter had not seen before.
+    ("'most of the following' is a choice list", "Applied AI Engineer",
+     "5+ years of experience with most of the following: Angular, React, NodeJS, Python, C#, .NET, Java, SQL, LangChain.", KEEP),
+    ("three languages and an 'or'", "Technical Lead - AI First Approach",
+     "Backend in Laravel (PHP), Node.js (Express/Nest), or Python (Django/FastAPI) with OpenAI API integration.", KEEP),
+    ("a choice that does not include Python", "Software Engineer",
+     "Requires C# / .NET and Python.\nBuild .NET services and APIs.", "Different stack: .NET"),
+    ("frameworks named inside a choice", "Senior Backend Engineer",
+     "Backend services and REST APIs using Java/Spring Boot, Python or Rust, depending on the service.\n"
+     "Strong programming skills in at least one of Java/Spring Boot, Python or Rust.", KEEP),
+    ("slash pair followed by one language's frameworks", "Sr. Software Developer (Python & AI)",
+     "Strong proficiency in Java/Python, J2EE, Spring, Spring Boot, microservices.\nPython for AI features.", "Different stack: Java"),
+    ("'team' in the sentence does not hide a requirement", "Gen AI Developer",
+     "A developer with 7+ years of experience in Java, Python, and Kubernetes, comfortable working as part of a paired team.\n"
+     "Build LLM applications.", "Different stack: Java"),
+    ("cloud infrastructure work under a software title", "Enterprise Cloud Software Engineer",
+     "Automate provisioning with Terraform and Bicep.\nAnsible playbooks and patching.\nPython scripting.", "Different stack: DevOps / infrastructure"),
+    ("GenAI platform job that also provisions infrastructure", "Engineer - AI Platform",
+     "Python (preferred) or Java/Go.\nGenAI/LLM hands-on: calling LLM APIs, RAG patterns.\nTerraform, Helm and provisioning of the platform.", KEEP),
+    ("Python job that integrates with an ERP", "Python Developer",
+     "Backend services and APIs in Python (FastAPI).\nPython and PostgreSQL.\nPython tests with pytest.\nPython workers with Celery.\n"
+     "Python data jobs.\nPython SDK.\nSync with SAP.\nSAP orders.\nSAP invoices.\nSAP stock.\nSAP customers.", KEEP),
     ("Java is the stack, Python once", "Software Engineer",
      "5 years of Java development.\nSpring Boot, Hibernate, microservices.\nJava 17 features.\nScripting in Python.", "Different stack: Java"),
     ("Python and Java both required", "Backend Developer", "Proficiency in Python and Java is required.", "Different stack: Java"),

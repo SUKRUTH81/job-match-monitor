@@ -438,11 +438,12 @@ TITLE_OTHER_STACKS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("Mobile", re.compile(r"\bandroid\b|\bios\b|\bflutter\b|\breact\s+native\b|\bswift\b|\bmobile\b")),
     ("Salesforce / SAP / ERP", re.compile(
         r"\bsalesforce\b|\bsfdc\b|\bsap\b|\babap\b|\bservicenow\b|\bpega\b|\bsharepoint\b|\bdynamics\b|"
-        r"\bpower\s?(?:apps|platform|automate)\b|\boracle\b|\bpl\s*/?\s*sql\b|\bworkday\b|\bodoo\b|\bmulesoft\b")),
+        r"\bpower\s?(?:apps|platform|automate)\b|\boracle\b|\bpl\s*/?\s*sql\b|\bworkday\b|\bodoo\b|\bmulesoft\b|\berp\b|\bcrm\b")),
     ("Mainframe", re.compile(r"\bmainframes?\b|\bcobol\b|\bas\s?/?\s?400\b")),
     ("Embedded", re.compile(r"\bembedded\b|\bfirmware\b|\brtos\b|\bautosar\b|\bdevice\s+drivers?\b|\bbsp\b|\biot\b|\bplc\b")),
     ("DevOps / infrastructure", re.compile(
         r"\bdevops\b|\bdevsecops\b|\bsre\b|\bsite\s+reliability\b|\binfrastructure\b|\bops\b|\b[a-z]+ops\b|\bnetwork\w*\b|"
+        r"\bcloud\s+(?:engineer|architect|admin\w*|operations)\b|"
         r"\bsecurity\b|\bcyber\w*\b|\bsystems?\s+admin\w*\b|\bdba\b|\bdatabase\s+admin\w*\b")),
     ("Data engineering / BI", re.compile(
         r"\bdata\b[^,;|()]{0,14}\bengineer\w*\b|\betl\b|\bbig\s+data\b|\bdata\s+warehouse\b|\bbi\s+developer\b|\bbusiness\s+intelligence\b|"
@@ -518,7 +519,7 @@ GENAI_RE = re.compile(
 )
 _DEVELOPER_TITLE_RE = re.compile(
     r"\b(?:engineer\w*|developer|programmer|sde|swe|mts|member\s+of\s+technical\s+staff|full[- ]?stack|back[- ]?end|"
-    r"development|coder|computer\s+scientist)\b",
+    r"development|coder|computer\s+scientist|tech(?:nical)?\s+lead)\b",
     re.I,
 )
 # Programming languages the candidate does not work in. Value: (pattern, skill names used in SKILL_PATTERNS).
@@ -542,8 +543,15 @@ _LANGUAGE_WORD = (
 _LANGUAGE_ALTERNATIVE_RE = re.compile(
     rf"(?<![\w+#.]){_LANGUAGE_WORD}[\s,(]*(?:\bor\b|\band\s*/\s*or\b|/|\|)[\s(]*{_LANGUAGE_WORD}(?![\w+#])", re.I
 )
+_LANGUAGE_WORD_RE = re.compile(rf"(?<![\w+#.]){_LANGUAGE_WORD}(?![\w+#])", re.I)
+_PYTHON_ALTERNATIVE_RE = re.compile(
+    rf"\bpython[\s,(]*(?:\bor\b|\band\s*/\s*or\b|/|\|)[\s(]*{_LANGUAGE_WORD}(?![\w+#])|"
+    rf"(?<![\w+#.]){_LANGUAGE_WORD}[\s,)]*(?:\bor\b|\band\s*/\s*or\b|/|\|)[\s(]*python\b",
+    re.I,
+)
 _LANGUAGE_LIST_INTRO_RE = re.compile(
     r"\b(?:such\s+as|like|e\.?g|one\s+of|any\s+of|any\s+one|one\s+or\s+more|at\s+least\s+one|either|similar|equivalent|"
+    r"most\s+of|some\s+of|several\s+of|any\s+combination|"
     r"including\s+but\s+not\s+limited|(?:any|a)\s+(?:modern\s+|high[- ]level\s+|general[- ]purpose\s+|object[- ]oriented\s+|"
     r"programming\s+|scripting\s+|backend\s+)+languages?)\b",
     re.I,
@@ -557,7 +565,8 @@ _OPTIONAL_SKILL_RE = re.compile(
 # A sentence about who the job works with or what is being replaced, not about what the applicant must know:
 # "work alongside our Java platform team", "migrate legacy Java services to Python".
 _NOT_A_REQUIREMENT_RE = re.compile(
-    r"\b(?:alongside|collaborat\w+|partner(?:ing|s)?\s+with|teams?|stakeholders|migrat\w+|legacy|rewrit\w+|replac\w+|"
+    r"\b(?:alongside|collaborat\w+|partner(?:ing|s)?\s+with|stakeholders|migrat\w+|legacy|rewrit\w+|replac\w+|"
+    r"(?:java|kotlin|\.net|c#|c\+\+|golang|go|php|ruby|rust|scala|android|ios)\s+(?:[\w-]+\s+){0,2}teams?|"
     r"convert\w*|moving\s+(?:away\s+)?from)\b",
     re.I,
 )
@@ -607,6 +616,17 @@ _APP_DEVELOPMENT_RE = re.compile(
 
 
 _OR_WORD_RE = re.compile(r"\bor\b", re.I)
+_STRONG_CHOICE_RE = re.compile(
+    r"\b(?:one\s+of|any\s+of|any\s+one|at\s+least\s+one|either|one\s+or\s+more|most\s+of|some\s+of|several\s+of)\b", re.I
+)
+# Cloud infrastructure work. Three or more of these with no application work is a DevOps job under another title.
+_INFRASTRUCTURE_TERMS = _terms(
+    ("terraform", r"\bterraform\b"), ("bicep", r"\bbicep\b"), ("ansible", r"\bansible\b"),
+    ("cloudformation", r"\bcloudformation\b"), ("pulumi", r"\bpulumi\b"), ("helm", r"\bhelm\b"),
+    ("iac", r"\binfrastructure[- ]as[- ]code\b|\biac\b"), ("provisioning", r"\bprovision(?:ing|s)?\b"),
+    ("patching", r"\bpatching\b"), ("cloud infrastructure", r"\bcloud\s+infrastructure\b"),
+    ("landing zone", r"\blanding\s+zones?\b"), ("networking", r"\bvnets?\b|\bvpcs?\b|\bfirewalls?\b"),
+)
 # A line that is only a bracketed remark - "(Preferred)", "(Nice to have)" - belongs to the line above it.
 _PARENTHETICAL_LINE_RE = re.compile(r"^\s*[(\[][^()\[\]]{1,40}[)\]]\s*$")
 # "C/C++/STL/BOOST/Python/Java/REST API": a run of slashes is a skills list, not a choice between two.
@@ -671,6 +691,7 @@ def analyse_role_fit(job: Dict[str, Any]) -> Dict[str, Any]:
     ecosystem: Dict[str, Set[str]] = {name: set() for name in _ECOSYSTEMS}
     python_ecosystem: Set[str] = set()
     data_engineering: Set[str] = set()
+    infrastructure: Set[str] = set()
     app_development = False
     platform_sentences: Dict[str, int] = {}
     genai = bool(GENAI_RE.search(title))
@@ -682,10 +703,18 @@ def analyse_role_fit(job: Dict[str, Any]) -> Dict[str, Any]:
             python_sentences += 1
         genai = genai or bool(GENAI_RE.search(sentence))
         optional = section == "preferred" or bool(_OPTIONAL_SKILL_RE.search(sentence))
+        skills_list = bool(_SLASH_CHAIN_RE.search(sentence))
+        # Frameworks named inside "at least one of Java/Spring Boot, Python or Rust" do not show the stack.
+        explicit_choice = has_python and (
+            bool(_STRONG_CHOICE_RE.search(sentence))
+            or (bool(_PYTHON_ALTERNATIVE_RE.search(sentence)) and bool(_OR_WORD_RE.search(sentence)))
+        )
         if not optional:
             python_ecosystem.update(name for name, pattern in _PYTHON_ECOSYSTEM if pattern.search(sentence))
-            for stack, terms in _ECOSYSTEMS.items():
-                ecosystem[stack].update(name for name, pattern in terms if pattern.search(sentence))
+            if not explicit_choice:
+                for stack, terms in _ECOSYSTEMS.items():
+                    ecosystem[stack].update(name for name, pattern in terms if pattern.search(sentence))
+            infrastructure.update(name for name, pattern in _INFRASTRUCTURE_TERMS if pattern.search(sentence))
             data_engineering.update(name for name, pattern in _DATA_ENGINEERING_TERMS if pattern.search(sentence))
             app_development = app_development or bool(_APP_DEVELOPMENT_RE.search(sentence))
             platform = _PLATFORM_RE.search(sentence)
@@ -696,12 +725,15 @@ def analyse_role_fit(job: Dict[str, Any]) -> Dict[str, Any]:
         present = [name for name, (pattern, _) in OTHER_LANGUAGES.items() if pattern.search(sentence)]
         if not present:
             continue
-        skills_list = bool(_SLASH_CHAIN_RE.search(sentence))
+        has_or = bool(_OR_WORD_RE.search(sentence))
+        languages_named = {word.lower() for word in _LANGUAGE_WORD_RE.findall(sentence)}
         alternative = has_python and (
             bool(_LANGUAGE_LIST_INTRO_RE.search(sentence))
-            or (bool(_LANGUAGE_ALTERNATIVE_RE.search(sentence)) and not skills_list)
-            # "Python, Java, Go, C#, or another modern backend language": several languages and an "or".
-            or (len(present) >= 2 and not skills_list and bool(_OR_WORD_RE.search(sentence)))
+            # "Python/Java", "Java or Python": the choice has to include Python. "C# / .NET and Python" does not.
+            or (bool(_PYTHON_ALTERNATIVE_RE.search(sentence)) and not skills_list)
+            or (bool(_LANGUAGE_ALTERNATIVE_RE.search(sentence)) and has_or and not skills_list)
+            # "Laravel (PHP), Node.js (Express/Nest), or Python (Django/FastAPI)": three languages and an "or".
+            or (len(languages_named) >= 3 and has_or and not skills_list)
         )
         for name in present:
             if optional or alternative:
@@ -723,6 +755,7 @@ def analyse_role_fit(job: Dict[str, Any]) -> Dict[str, Any]:
         "ecosystem": {stack: sorted(names) for stack, names in ecosystem.items() if names},
         "python_ecosystem": sorted(python_ecosystem),
         "data_engineering": sorted(data_engineering),
+        "infrastructure": sorted(infrastructure),
         "app_development": app_development or bool(_APP_DEVELOPMENT_RE.search(title)),
         "platform_sentences": max(platform_sentences.values(), default=0),
     }
@@ -757,7 +790,8 @@ def role_mismatch(job: Dict[str, Any]) -> str:
     # Another language is asked for outright ("Strong C# and .NET Core", "5 years of Java").
     for name in sorted(fit["required"], key=lambda n: -fit["required"][n]):
         return f"{DIFFERENT_STACK}: {name}"
-    # Asked for together with Python ("Proficiency in Python and Java") and nowhere offered as a choice.
+    # Asked for together with Python ("Proficiency in Python and Java", "using Python, FastAPI, .NET and React")
+    # and nowhere offered as a choice.
     for name in sorted(fit["paired"], key=lambda n: -fit["paired"][n]):
         if name not in fit["offered_as_choice"]:
             return f"{DIFFERENT_STACK}: {name}"
@@ -767,8 +801,10 @@ def role_mismatch(job: Dict[str, Any]) -> str:
             return f"{DIFFERENT_STACK}: {stack}"
     if len(fit["data_engineering"]) >= 3 and not fit["app_development"] and not fit["genai"]:
         return f"{DIFFERENT_STACK}: Data engineering / BI"
+    if len(fit["infrastructure"]) >= 3 and not fit["app_development"] and not fit["genai"]:
+        return f"{DIFFERENT_STACK}: DevOps / infrastructure"
     # One enterprise platform named in five or more sentences: the job is on that platform.
-    if fit["platform_sentences"] >= 5:
+    if fit["platform_sentences"] >= 5 and fit["platform_sentences"] > fit["python_sentences"]:
         return f"{DIFFERENT_STACK}: Salesforce / SAP / ERP"
     return ""
 
@@ -2270,9 +2306,15 @@ def experience_is_unverified(job: Dict[str, Any]) -> bool:
 
 
 def rejection_reason(job: Dict[str, Any], enforce_title: bool = True, candidate_yoe: float = 2.0) -> str:
-    """Name the first preference a job fails, or return "" when it passes all of them."""
+    """Name the first preference a job fails, or return "" when it passes all of them.
+
+    The title comes first, so "Location" and "Experience" only ever count jobs that had a target title,
+    and the role-fit reasons come last, so they only name jobs that met everything else.
+    """
     if not source_is_allowed(job):
         return "Not a LinkedIn job link"
+    if enforce_title and not title_is_target_role(job):
+        return "Job title"
     if not location_is_eligible(job):
         return "Location"
     if not experience_is_eligible(job, candidate_yoe=candidate_yoe):
@@ -2280,8 +2322,6 @@ def rejection_reason(job: Dict[str, Any], enforce_title: bool = True, candidate_
     if not employment_is_eligible(job):
         return "Not full-time"
     if enforce_title:
-        if not title_is_target_role(job):
-            return "Job title"
         other = title_other_stack(str(job.get("title") or ""))
         if other:
             return other if other == NOT_DEVELOPER_ROLE else f"{DIFFERENT_STACK}: {other}"
@@ -2523,16 +2563,33 @@ SCORE_EXPLANATION = (
 )
 
 
+def scan_summary_html(reason_counts: Dict[str, int], hours: float) -> str:
+    """One paragraph: how many postings were scanned and how many each filter took out."""
+    total = sum(reason_counts.values())
+    if not total:
+        return ""
+    passed = reason_counts.get("", 0)
+    out = sorted(((reason, count) for reason, count in reason_counts.items() if reason), key=lambda kv: -kv[1])
+    filtered = ", ".join(f"{html.escape(reason)} {count}" for reason, count in out)
+    return (
+        f"<p>Scanned <b>{total}</b> LinkedIn posting(s) from the last {hours:g} hour(s); <b>{passed}</b> passed every filter."
+        + (f" Filtered out: {filtered}." if filtered else "")
+        + "</p>"
+    )
+
+
 def build_email_html(
     matched: Sequence[Dict[str, Any]],
     all_scraped: Sequence[Dict[str, Any]],
     unchecked: Sequence[Dict[str, Any]] = (),
     removed: Sequence[Tuple[Dict[str, Any], str]] = (),
+    scan_summary: str = "",
 ) -> str:
     run_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
     return f"""<!doctype html><html><body style="font-family:Arial,sans-serif;color:#202124">
     <h2>LinkedIn Job Match Monitor Report</h2>
     <p>Run time: <b>{run_time}</b></p>
+    {scan_summary}
     <p>Only developer roles that use Python are listed (Java, .NET and other stacks are removed); one opening posted in several cities is shown once.</p>
     <p>{SCORE_EXPLANATION}</p>
     <h3>1. Jobs matching 60% or more ({len(matched)})</h3>
@@ -2555,7 +2612,9 @@ def build_status_email_html(collected: Sequence[Dict[str, Any]], hours: float, c
     counts: Dict[str, int] = {}
     for _, reason in reasons:
         counts[reason] = counts.get(reason, 0) + 1
-    summary = ", ".join(f"{html.escape(reason)}: {count}" for reason, count in sorted(counts.items(), key=lambda kv: -kv[1]))
+    # Jobs whose title was never one of the target roles ("Business Development Manager") are counted, not listed.
+    listed = [(job, reason) for job, reason in reasons if reason != "Job title"]
+    off_title = len(reasons) - len(listed)
     if not collected:
         detail = (
             "<p>LinkedIn returned no job listings for this window. That can mean nothing new was posted, "
@@ -2563,7 +2622,7 @@ def build_status_email_html(collected: Sequence[Dict[str, Any]], hours: float, c
         )
     else:
         rows = []
-        for job, reason in reasons[:100]:
+        for job, reason in listed[:100]:
             url = html.escape(clean_job_url(job), quote=True)
             title = html.escape(str(job.get("title") or "Untitled role"))
             title_cell = f'<a href="{url}">{title}</a>' if url.startswith("https://") else title
@@ -2576,19 +2635,22 @@ def build_status_email_html(collected: Sequence[Dict[str, Any]], hours: float, c
             ]
             rows.append("<tr>" + "".join(f"<td>{v}</td>" for v in vals) + "</tr>")
         th = "".join(f"<th>{h}</th>" for h in ("Job title", "Company", "Location", "Experience", "Filtered out by"))
-        more = f"<p>Showing the first 100 of {len(reasons)} jobs.</p>" if len(reasons) > 100 else ""
-        detail = (
-            f"<p>Filtered out by: {summary}.</p>"
+        more = f"<p>Showing the first 100 of {len(listed)} jobs.</p>" if len(listed) > 100 else ""
+        not_listed = (
+            f"<p>{off_title} other posting(s) had job titles outside your target roles and are not listed.</p>" if off_title else ""
+        )
+        table = (
             '<div style="overflow-x:auto"><table cellpadding="7" cellspacing="0" '
             'style="border-collapse:collapse;width:100%;font-size:12px">'
             f'<thead><tr style="background:#17365d;color:#fff">{th}</tr></thead>'
-            f'<tbody>{"".join(rows)}</tbody></table></div>{more}'
-        )
+            f'<tbody>{"".join(rows)}</tbody></table></div>'
+        ) if rows else ""
+        detail = f"{scan_summary_html(counts, hours)}<p>Jobs with one of your target titles, and the filter each one failed:</p>{table}{more}{not_listed}"
     return f"""<!doctype html><html><body style="font-family:Arial,sans-serif;color:#202124">
     <h2>LinkedIn Job Match Monitor: no eligible jobs this run</h2>
     <p>Run time: <b>{run_time}</b></p>
-    <p>Scanned <b>{len(collected)}</b> LinkedIn job(s) posted in the last {hours:g} hour(s).
-    None passed the location, experience ({candidate_yoe:g} years), full-time, job-title and Python-role filters.</p>
+    <p>None of the postings from the last {hours:g} hour(s) passed the location, experience ({candidate_yoe:g} years),
+    full-time, job-title and Python-role filters.</p>
     {detail}
     {run_notes_html()}
     <p style="font-size:11px;color:#666;margin-top:22px">Automated report. This mail is sent on every run, including runs with no matches.</p>
@@ -2818,7 +2880,14 @@ def main() -> int:
 
     # Send email notification (to akhilarohithayepuri@gmail.com) with attached Excel report
     unchecked = [j for j in collected if reasons.get(id(j)) == DESCRIPTION_UNAVAILABLE]
-    mailed = send_gmail(title, build_email_html(matched, all_scraped, unchecked, removed), attachment=report_path)
+    reason_counts: Dict[str, int] = {}
+    for reason in reasons.values():
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    mailed = send_gmail(
+        title,
+        build_email_html(matched, all_scraped, unchecked, removed, scan_summary_html(reason_counts, args.hours)),
+        attachment=report_path,
+    )
 
     for job in jobs_to_report:
         seen_ids.update(x for x in reported_ids(job) if x != SEEN_KEY_PREFIX + "None")
