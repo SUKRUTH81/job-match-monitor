@@ -131,6 +131,9 @@ If you wish to route LinkedIn requests through a dedicated proxy, add your proxy
 - **Apply type ratio:** 80% Easy Apply (`f_AL=true`) and 20% Normal Apply jobs.
 - **Experience (YOE):** A job is kept when the candidate's 2 years fall inside the experience the posting asks for. A range is accepted when it contains 2 (0-2, 1-2, 0-3, 1-3, 2-4, 2-10); a minimum is accepted when it is 2 or less (1+, 2+); an upper limit is accepted when it is 2 or more. Everything else is excluded (0-1 fresher only, 3-5, 3+, 4+, 5+). A figure in the job title wins over the description; "preferred" figures do not count when a required one exists; company age, contract length, notice period and similar durations are ignored. A job that states no experience is kept. A job whose description LinkedIn did not return cannot be checked, so it is not counted as a match and is listed separately in the email as "Not checked". Senior titles (Staff, Principal, Architect, Director, VP, SDE 3/4/5) are excluded.
 - **Posting age:** Strictly jobs posted within 1 hour (<= 1.0h freshness window).
+- **Search:** each keyword (AI Engineer, Generative AI, LLM Engineer, Software Engineer, Python Developer, Django, Full Stack Developer, Backend Developer) is searched separately in Hyderabad, Bengaluru, Chennai and India-remote (`SEARCH_TERMS` and `SEARCH_LOCATIONS` in `job_match_runner.py`).
+- **Skill score:** skills the candidate has divided by all skills the posting names. Other stacks (Java, Spring, .NET, C#, C++, Angular, PHP and similar) are recognised as skills the candidate lacks, so a posting built on them scores low.
+- **Senior titles:** a Senior / Sr / Lead title is excluded when the posting states no years; when it states years, the figure decides.
 - **Target roles:** AI Engineer, Software Engineer, Python Backend, Python Full Stack, Python Developer, and Python engineering jobs.
 
 ## Candidate profile source

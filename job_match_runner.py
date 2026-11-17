@@ -161,6 +161,8 @@ CANDIDATE_SKILLS = {
     "jwt", "rbac", "session management", "multi-tenant", "api security",
     "burp suite", "docker", "nginx", "ci/cd", "git", "github", "postman",
     "power bi",
+    # Implied by the resume's AI work: LLM applications, and Azure through Azure OpenAI / Azure AI Search
+    "llm", "azure",
 }
 
 # Job-description vocabulary. A skill is scored once even if repeated many times.
@@ -232,6 +234,44 @@ SKILL_PATTERNS: Dict[str, Tuple[str, ...]] = {
     "pandas": (r"\bpandas\b",),
     "pytorch": (r"\bpytorch\b",),
     "tensorflow": (r"\btensorflow\b",),
+    # Other stacks. The candidate does not have these, so a posting built on them must lose score;
+    # without them here a Java or .NET role that mentions Python once scored 100%.
+    "java": (r"\bjava\b", r"\bj2ee\b"),
+    "spring": (r"\bspring\b",),
+    ".net": (r"(?<![\w.])\.net\b", r"\bdotnet\b", r"\basp\.net\b"),
+    "c#": (r"(?<![\w+#])c#(?!\w)",),
+    "c++": (r"(?<![\w+#])c\+\+(?!\w)",),
+    "golang": (r"\bgolang\b", r"\bgo\s+(?:developer|engineer|programming|language)\b"),
+    "rust": (r"\brust\b",),
+    "php": (r"\bphp\b", r"\blaravel\b"),
+    "ruby": (r"\bruby\b",),
+    "scala": (r"\bscala\b",),
+    "kotlin": (r"\bkotlin\b",),
+    "swift": (r"\bswift(?:ui)?\b",),
+    "android": (r"\bandroid\b",),
+    "ios": (r"\bios\b",),
+    "angular": (r"\bangular(?:js)?\b",),
+    "vue": (r"\bvue(?:\.js)?\b",),
+    "next.js": (r"\bnext\.?js\b",),
+    "express": (r"\bexpress\.?js\b",),
+    "terraform": (r"\bterraform\b",),
+    "ansible": (r"\bansible\b",),
+    "jenkins": (r"\bjenkins\b",),
+    "spark": (r"\bspark\b", r"\bpyspark\b"),
+    "hadoop": (r"\bhadoop\b",),
+    "snowflake": (r"\bsnowflake\b",),
+    "databricks": (r"\bdatabricks\b",),
+    "airflow": (r"\bairflow\b",),
+    "oracle": (r"\boracle\s+(?:db|database|sql|apex|ebs|fusion|cloud)\b", r"\bpl\s*/?\s*sql\b"),
+    "elasticsearch": (r"\belasticsearch\b",),
+    "cassandra": (r"\bcassandra\b",),
+    "dynamodb": (r"\bdynamodb\b",),
+    "tableau": (r"\btableau\b",),
+    "selenium": (r"\bselenium\b",),
+    "salesforce": (r"\bsalesforce\b",),
+    "sap": (r"\bsap\b",),
+    "servicenow": (r"\bservicenow\b",),
+    "embedded": (r"\bembedded\s+(?:systems?|software|c|linux)\b", r"\bfirmware\b"),
 }
 
 # Current search preferences supplied by the candidate:
@@ -254,12 +294,19 @@ REMOTE_ONLY_OUTSIDE_INDIA_PATTERNS = (
 
 SEARCH_TERMS = [
     "AI Engineer",
+    "Generative AI",
+    "LLM Engineer",
     "Software Engineer",
-    "Python Backend",
-    "Python Full Stack",
     "Python Developer",
-    "Python",
+    "Django",
+    "Full Stack Developer",
+    "Backend Developer",
 ]
+
+# Each term is searched in each of these places. Searching all of India and filtering afterwards
+# filled LinkedIn's result cap with other cities and returned about half as many usable jobs.
+# "Remote" means remote jobs anywhere in India.
+SEARCH_LOCATIONS = ["Hyderabad", "Bengaluru", "Chennai", "Remote"]
 
 # Target role titles explicitly requested by candidate:
 # "ai engineer, software engineer, python backend, python full stack, python jobs only"
@@ -1003,7 +1050,7 @@ def scrape_linkedin_guest_jobs(
 
     backoff = LinkedInBackoff()
     terms = list(keywords_list) if keywords_list else SEARCH_TERMS
-    locs = list(locations_list) if locations_list else ["India"]
+    locs = list(locations_list) if locations_list else SEARCH_LOCATIONS
 
     # Calculate dynamic f_TPR
     tpr_seconds = max(3600, int(float(hours) * 3600))
@@ -1484,6 +1531,9 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+SENIOR_TITLE_RE = re.compile(r"\b(?:senior|sr|lead)\b", re.I)
+
+
 def experience_is_eligible(job: Dict[str, Any], candidate_yoe: float = 2.0) -> bool:
     """Is a candidate with candidate_yoe years inside the experience the posting asks for?
 
@@ -1491,7 +1541,7 @@ def experience_is_eligible(job: Dict[str, Any], candidate_yoe: float = 2.0) -> b
       Range "a - b yrs" : accept when a <= 2.0 <= b   (0-2, 1-2, 2-4, 2-10, 0-3, 1-3 yes; 0-1, 3-5 no)
       Minimum "a+"      : accept when a <= 2.0        (2+ yes; 3+, 4+, 5+ no)
       Maximum "up to b" : accept when b >= 2.0
-      Nothing stated    : accept
+      Nothing stated    : accept, unless the title says Senior / Sr / Lead
     Director and Executive seniority levels are always rejected.
     """
     seniority = str(job.get("seniority_level") or "").strip().lower()
@@ -1501,6 +1551,10 @@ def experience_is_eligible(job: Dict[str, Any], candidate_yoe: float = 2.0) -> b
     _extract_experience_range(job)
     minimum = _as_float(job.get("min_experience_years"))
     maximum = _as_float(job.get("max_experience_years"))
+    if minimum is None and maximum is None:
+        # No figure to go on. A Senior or Lead title is then taken at its word; when such a posting
+        # does state years ("Senior Engineer, 2-4 yrs"), the figure decides instead.
+        return not SENIOR_TITLE_RE.search(str(job.get("title") or ""))
     if minimum is not None and minimum > candidate_yoe:
         return False
     if maximum is not None and maximum < candidate_yoe:
@@ -2020,10 +2074,21 @@ def main() -> int:
     all_scraped = sorted(jobs_to_report, key=lambda j: (int(j.get("skill_match_pct", 0)), 1 if j.get("is_easy_apply") else 0, str(j.get("title", "")).lower()), reverse=True)
 
     report_path = create_excel(matched, all_scraped)
-    title = f"LinkedIn job matches: {len(matched)} at 60%+ | {run_stamp}"
+    if new_jobs:
+        title = f"LinkedIn job matches: {len(matched)} at 60%+ | {run_stamp}"
+    else:
+        title = f"LinkedIn job scan: nothing new, {len(matched)} earlier match(es) still open | {run_stamp}"
 
     issue_url = ""
-    if not matched:
+    if not new_jobs:
+        # Everything in this report was already sent by an earlier run: mail it, but no second issue.
+        LOG.info("No new jobs; %d already-reported job(s) are still inside the window. No new GitHub Issue.", len(all_scraped))
+        send_push_notification(
+            f"LinkedIn Scan at {run_stamp}: nothing new",
+            f"{len(all_scraped)} job(s) from earlier runs are still open; no new postings matched.",
+            priority="default",
+        )
+    elif not matched:
         LOG.info("LinkedIn jobs were found, but none reached %d%%. Excel report created; no GitHub Issue.", args.min_match)
         send_push_notification(
             f"LinkedIn Scan at {run_stamp}: 0 Matches at 60%+",
