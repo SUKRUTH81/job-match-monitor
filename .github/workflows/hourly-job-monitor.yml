@@ -18,14 +18,6 @@ on:
         description: 'Candidate years of experience (default 2.0)'
         required: false
         default: '2.0'
-      min_yoe:
-        description: 'Minimum acceptable YOE'
-        required: false
-        default: '0.0'
-      max_yoe:
-        description: 'Maximum acceptable YOE (ceiling)'
-        required: false
-        default: '5.0'
       force_notify:
         description: 'Force notification issue creation even if jobs were previously seen'
         type: boolean
@@ -84,20 +76,21 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           JOB_ALERT_TO: ${{ secrets.JOB_ALERT_TO || 'sukruth1435@gmail.com, akhilarohithayepuri@gmail.com' }}
+          # Inputs go through the environment, not straight into the script text, so a
+          # keyword with spaces ("AI Engineer") stays one argument.
+          INPUT_HOURS: ${{ inputs.hours || '1' }}
+          INPUT_KEYWORDS: ${{ inputs.keywords }}
+          INPUT_CANDIDATE_YOE: ${{ inputs.candidate_yoe || '2.0' }}
+          INPUT_FORCE_NOTIFY: ${{ inputs.force_notify }}
         run: |
-          HOURS="${{ inputs.hours || '1' }}"
-          KW_ARG=""
-          if [ -n "${{ inputs.keywords }}" ]; then
-            KW_ARG="--keywords ${{ inputs.keywords }}"
+          ARGS=(--hours "$INPUT_HOURS" --target-count 0 --min-match 60 --candidate-yoe "$INPUT_CANDIDATE_YOE")
+          if [ -n "$INPUT_KEYWORDS" ]; then
+            ARGS+=(--keywords "$INPUT_KEYWORDS")
           fi
-          FORCE_ARG=""
-          if [ "${{ inputs.force_notify }}" = "true" ]; then
-            FORCE_ARG="--force-notify"
+          if [ "$INPUT_FORCE_NOTIFY" = "true" ]; then
+            ARGS+=(--force-notify)
           fi
-          CANDIDATE_YOE="${{ inputs.candidate_yoe || '2.0' }}"
-          MIN_YOE="${{ inputs.min_yoe || '0.0' }}"
-          MAX_YOE="${{ inputs.max_yoe || '5.0' }}"
-          python job_match_runner.py --hours $HOURS --target-count 0 --min-match 60 --candidate-yoe $CANDIDATE_YOE --min-yoe $MIN_YOE --max-yoe $MAX_YOE $KW_ARG $FORCE_ARG
+          python job_match_runner.py "${ARGS[@]}"
 
       - name: Save seen-job history
         if: success()

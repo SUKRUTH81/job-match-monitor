@@ -116,7 +116,7 @@ Committing `data/linkedin_jobs.json` to the default branch triggers a run. The s
    - Every issue automatically mentions and assigns `@SUKRUTH81`, delivering an immediate push alert.
 3. **Email Notifications:**
    - GitHub automatically sends notification emails from `notifications@github.com` (found under the **Updates** tab or **Spam** folder).
-   - Direct Gmail SMTP delivery is also supported if `GMAIL_ADDRESS` and `GMAIL_APP_PASSWORD` secrets are provided.
+   - Direct Gmail SMTP delivery is used when the `GMAIL_ADDRESS` and `GMAIL_APP_PASSWORD` secrets are set. **Every run sends one email**, whatever it finds: the match report when there are eligible jobs, a short "no eligible jobs" mail listing what was scanned and why each job was filtered out when there are none, and a "scan FAILED" mail if the run crashes. A missing hourly mail therefore means the run did not start. If Gmail refuses the mail three times in a row, the run is marked failed (red) on the Actions tab.
 
 ## Permissions and secrets
 
@@ -129,7 +129,7 @@ If you wish to route LinkedIn requests through a dedicated proxy, add your proxy
 - **Locations:** Strictly Hyderabad, Bengaluru ("bgl"), Chennai (all work modes: Onsite, In-Office, Hybrid, Remote) and India Remote. Worldwide remote and other cities (Pune, Noida, Mumbai) are strictly excluded.
 - **Employment type:** Strictly full-time jobs only (excludes internships, trainees, contractors, evaluators, and part-time).
 - **Apply type ratio:** 80% Easy Apply (`f_AL=true`) and 20% Normal Apply jobs.
-- **Experience (YOE):** Stated ranges must strictly contain 2 years (e.g. 0 to 2, 0 to 3, 1 to 3, 2 to 4, 2 to 5) or be a 2+ minimum requirement (e.g. 2+, 1+). Roles that do not include 2 years (e.g. 0–1 fresher only, 3–5, 4–7, 5–8, 6+, 8+, 10+) or senior titles (Staff, Principal, Architect, Director, VP, SDE 3/4/5) are strictly excluded.
+- **Experience (YOE):** A job is kept when the candidate's 2 years fall inside the experience the posting asks for. A range is accepted when it contains 2 (0-2, 1-2, 0-3, 1-3, 2-4, 2-10); a minimum is accepted when it is 2 or less (1+, 2+); an upper limit is accepted when it is 2 or more. Everything else is excluded (0-1 fresher only, 3-5, 3+, 4+, 5+). A figure in the job title wins over the description; "preferred" figures do not count when a required one exists; company age, contract length, notice period and similar durations are ignored. A job that states no experience is kept. A job whose description LinkedIn did not return cannot be checked, so it is not counted as a match and is listed separately in the email as "Not checked". Senior titles (Staff, Principal, Architect, Director, VP, SDE 3/4/5) are excluded.
 - **Posting age:** Strictly jobs posted within 1 hour (<= 1.0h freshness window).
 - **Target roles:** AI Engineer, Software Engineer, Python Backend, Python Full Stack, Python Developer, and Python engineering jobs.
 

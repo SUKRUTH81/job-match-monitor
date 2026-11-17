@@ -507,55 +507,472 @@ def _verified_posting_age(job: Dict[str, Any]) -> float | None:
     return base_age + elapsed
 
 
-EXP_RANGE_PATTERN = re.compile(
-    r"\b(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*(?:\+\s*)?(?:[- ]?(?:years?|yrs?)(?:[’\']s)?)\b",
-    re.I,
+# ---------------------------------------------------------------------------
+# Experience requirement parsing
+# ---------------------------------------------------------------------------
+# A posting can mention years in many places. _experience_mentions() finds every
+# statement that looks like an experience requirement, drops the ones that are
+# not a requirement on the applicant (company age, contract length, notice
+# period, ...), and _resolve_experience() picks the binding (min, max) pair.
+
+_NUMBER_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "thirty": 30, "forty": 40,
+}
+_TENS_UNITS_RE = re.compile(r"\b(twenty|thirty|forty)[- ](one|two|three|four|five|six|seven|eight|nine)\b")
+_NUMBER_WORD_RE = re.compile(r"\b(" + "|".join(_NUMBER_WORDS) + r")\b")
+_EXP_CHAR_MAP = str.maketrans({
+    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-", "―": "-", "−": "-", "~": "-",
+    "‘": "'", "’": "'", "`": "'", "´": "'", "“": '"', "”": '"',
+    "_": " ", "\t": " ", "\r": " ", " ": " ", "​": " ", " ": " ",
+})
+_MISSPELT_YEARS_RE = re.compile(r"\b(?:yeras|yaers|yers|yeasr|yrears|yeears)\b")
+_MISSPELT_EXPERIENCE_RE = re.compile(
+    r"\b(?:expereince|experiance|experince|exprience|experiece|expirience|expierence|experiencce|experence|exeperience)\b"
 )
-EXP_MIN_PATTERN = re.compile(
-    r"(?:(?:minimum|min\.?|at\s+least|requires?)\s*(?:of\s*)?)(\d+(?:\.\d+)?)\s*(?:[- ]?(?:years?|yrs?)(?:[’\']s)?)",
-    re.I,
+
+
+# Degree abbreviations that are only recognisable while still in capitals ("BE" versus "be", "MS" versus "ms").
+_DEGREE_CONTEXT = r"(?=\s*(?:/|,|\(|\+|in\b|degree\b|or\b|with\b|plus\b))"
+_CAPITAL_BACHELOR_RE = re.compile(rf"\bB\.?\s?(?:E|S)\b\.?{_DEGREE_CONTEXT}")
+_CAPITAL_MASTER_RE = re.compile(rf"\bM\.?\s?(?:E|S)\b\.?{_DEGREE_CONTEXT}")
+
+
+def _normalise_experience_text(text: str) -> str:
+    """Lower-case and tidy text so the experience patterns only deal with one spelling of everything."""
+    t = _CAPITAL_BACHELOR_RE.sub("bachelor", str(text or ""))
+    t = _CAPITAL_MASTER_RE.sub("master", t)
+    t = t.lower().translate(_EXP_CHAR_MAP)
+    t = re.sub(r"[ ]{2,}", " ", t)
+    t = re.sub(r"\((s)\)", r"\1", t)  # year(s) -> years
+    t = _MISSPELT_YEARS_RE.sub("years", t)
+    t = _MISSPELT_EXPERIENCE_RE.sub("experience", t)
+    t = re.sub(r"\by\.?o\.?e\b\.?", "yoe", t)
+    t = _TENS_UNITS_RE.sub(lambda m: str(_NUMBER_WORDS[m.group(1)] + _NUMBER_WORDS[m.group(2)]), t)
+    t = _NUMBER_WORD_RE.sub(lambda m: str(_NUMBER_WORDS[m.group(1)]), t)
+    # "at least a year" -> "at least 1 year", "a couple of years" -> "2 years", "fresher to 3 years" -> "0 to 3 years"
+    t = re.sub(
+        r"\b((?:at least|atleast|minimum of|minimum|min|more than|over|up to|upto|less than|under) )an? (?=(?:year|yr)\b)",
+        r"\g<1>1 ", t,
+    )
+    t = re.sub(r"\ba couple of (?=(?:years|yrs)\b)", "2 ", t)
+    t = re.sub(r"\bfreshers?\s*(?:-|to)\s*(?=\d)", "0 to ", t)
+    return t
+
+
+_YR = r"(?:years?|yrs?|yoe)"
+_MO = r"(?:months?|mths?|mos)"
+_UNIT = rf"(?:{_YR}|{_MO})"
+
+
+def _num(name: str) -> str:
+    # One or two digits with an optional decimal part, not part of a longer number, date or version.
+    return rf"(?<![\d.])(?<!\d[,/:])(?P<{name}>\d{{1,2}}(?:\.\d{{1,2}})?)(?![\d/]|\.\d)"
+
+
+_MIN_KEYWORD = (
+    r"(?<![a-z])(?:minimum|min\b\.?|at\s*-?\s*least|atleast|not\s+less\s+than|no\s+less\s+than|"
+    r"(?<!no\s)(?<!not\s)more\s+than|greater\s+than|over|above|upwards\s+of|exceeding|>\s*=?|=\s*>|≥)"
 )
-EXP_PLUS_PATTERN = re.compile(
-    r"\b(\d+(?:\.\d+)?)\s*\+\s*(?:[- ]?(?:years?|yrs?)(?:[’\']s)?)\b",
-    re.I,
+_MAX_KEYWORD = (
+    r"(?<![a-z])(?:up\s*-?\s*to|maximum(?:\s+of)?|max\b\.?(?:\s+of)?|(?<!not\s)(?<!no\s)less\s+than|fewer\s+than|"
+    r"under|below|no\s+more\s+than|not\s+more\s+than|not\s+exceeding|<\s*=?|≤)"
 )
-EXP_YEARS_PATTERN = re.compile(
-    r"\b(\d+(?:\.\d+)?)\s*[- ]?(?:years?|yrs?)(?:[’\']s)?\s+(?:of\s+)?experience\b",
-    re.I,
+_EXP_LABEL = (
+    r"(?:(?:total|overall|relevant|work|working|required|minimum|min|professional|industry|prior|"
+    r"years?\s+of|yrs?\s+of)\s+)?(?:experience|exp|yoe)\b\.?"
+    r"(?:\s+(?:required|needed|range|level|bracket|band|criteria))?(?:\s*\((?:in\s+)?(?:years?|yrs?)\))?"
 )
-EXP_MAX_PATTERN = re.compile(
-    r"(?:(?:maximum|max\.?|up\s+to|no\s+more\s+than)\s*)(\d+(?:\.\d+)?)\s*(?:[- ]?(?:years?|yrs?)(?:[’\']s)?)",
-    re.I,
+_BOUND_LABEL_TAIL = (
+    r"\b\.?\s+(?:(?:work|relevant|total|required)\s+)?(?:experience|exp)\b\.?"
+    r"(?:\s*\((?:in\s+)?(?:years?|yrs?)\))?\s*[:=\-]*\s*"
 )
+_NOT_EXPERIENCE_UNIT = (
+    r"(?!\s*-?\s*(?:lpa|lakhs?|lacs?|k\b|%|days?|hrs?|hours?|pm\b|am\b|inr|rs\b|cr\b|members?|people|persons?|projects?))"
+)
+_END_OF_VALUE = r"(?=\s*(?:$|[)\]|,;.\n]))"
+_GAP_STOP = r"(?:degree|bachelor|master|diploma|course|program|contract|bond|old|and|or|but|then|plus|is|are|was|has|have)\b"
+
+# (kind, pattern). Order matters: an earlier pattern claims its text and later ones cannot reuse it.
+_EXPERIENCE_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
+    # "2-4 years", "2 to 4 yrs", "2 yrs - 4 yrs", "6 months to 2 years", "2-4+ years"
+    ("range", re.compile(
+        rf"{_num('a')}\s*(?P<aplus>\+)?\s*(?:-?\s*(?P<au>{_UNIT})\b\.?)?\s*(?:-|to|till|through|thru)\s*"
+        rf"{_num('b')}\s*(?P<bplus>\+)?\s*-?\s*(?P<bu>{_UNIT})\b"
+    )),
+    # "between 2 and 4 years"
+    ("range", re.compile(
+        rf"\bbetween\s+{_num('a')}\s*(?:-?\s*(?P<au>{_UNIT})\b\.?)?\s*(?:and|to|-|&)\s*{_num('b')}\s*-?\s*(?P<bu>{_UNIT})\b"
+    )),
+    # "Max Experience: 5 Years", "Min Experience: 2"
+    ("max", re.compile(rf"\bmax(?:imum)?{_BOUND_LABEL_TAIL}{_num('b')}\s*(?:-?\s*(?P<bu>{_UNIT})\b|{_END_OF_VALUE})")),
+    ("min", re.compile(rf"\bmin(?:imum)?{_BOUND_LABEL_TAIL}{_num('a')}\s*(?:\+\s*)?(?:-?\s*(?P<au>{_UNIT})\b|{_END_OF_VALUE})")),
+    # "minimum 2 years", "at least 3 yrs", "more than 2 years", ">= 2 yrs"
+    ("min", re.compile(rf"{_MIN_KEYWORD}\s*(?:of\s+)?(?:about\s+|around\s+)?{_num('a')}\s*(?:\+\s*)?-?\s*(?P<au>{_UNIT})\b")),
+    # "3 years+", "3 years or more", "3 years and above", "2 years minimum"
+    ("min", re.compile(
+        rf"{_num('a')}\s*-?\s*(?P<au>{_UNIT})\b\.?\s*"
+        r"(?:\+|plus\b|or\s+more\b|or\s+above\b|and\s+above\b|&\s*above\b|and\s+more\b|and\s+up\b|minimum\b|min\b|at\s+least\b)"
+    )),
+    # "3+ years", "3 plus years", "5-plus years"
+    ("min", re.compile(rf"{_num('a')}\s*(?:\+|-?\s*plus\b)\s*-?\s*(?P<au>{_UNIT})\b")),
+    # "3 or more years"
+    ("min", re.compile(rf"{_num('a')}\s+or\s+more\s+(?P<au>{_UNIT})\b")),
+    # "up to 2 years", "less than 3 years", "maximum 3 yrs"
+    ("max", re.compile(rf"{_MAX_KEYWORD}\s*{_num('b')}\s*-?\s*(?P<bu>{_UNIT})\b")),
+    # "2 years or less", "3 years max"
+    ("max", re.compile(rf"{_num('b')}\s*-?\s*(?P<bu>{_UNIT})\b\.?\s*(?:or\s+less\b|or\s+below\b|or\s+fewer\b|max\b|maximum\b)")),
+    # "Experience Range: 2 - 4", "Yrs of Exp: 4-6", "(Exp 4-6)" - a labelled range with no unit
+    ("range", re.compile(
+        rf"\b{_EXP_LABEL}\s*(?:[:=\-]+\s*|\s+){_num('a')}\s*(?:-|to)\s*{_num('b')}{_NOT_EXPERIENCE_UNIT}{_END_OF_VALUE}"
+    )),
+    # "YOE: 3+", "Experience: 5+"
+    ("min", re.compile(rf"\b{_EXP_LABEL}\s*[:=\-]+\s*{_num('a')}\s*\+{_NOT_EXPERIENCE_UNIT}{_END_OF_VALUE}")),
+    # "experience of 4 years", "Relevant Exp: 3 yrs"
+    ("exact", re.compile(
+        r"\b(?:experience|exp)\b\.?\s*(?:[:=\-]\s*)?"
+        r"(?:(?:of|is|required|needed|around|about|approx\.?|approximately|level|range)\s*(?:[:=\-]\s*)?){0,2}"
+        rf"{_num('a')}\s*-?\s*(?P<au>{_UNIT})\b"
+    )),
+    # "5 years of experience", "4 years of hands-on experience", "3 yrs exp", "5 years' experience"
+    ("exact", re.compile(
+        rf"{_num('a')}\s*-?\s*(?P<au>{_UNIT})\b(?:'s|s'|')?\.?\s*(?:(?:of|in|on|as|with|working)\s+)?"
+        rf"(?:(?!{_GAP_STOP})[a-z][a-z0-9+#./&'\-]*,?\s+){{0,6}}?(?:experience|exp\b|expertise|exposure)"
+    )),
+    # "3 years of Python", "2 years in Django", "2 years as a developer"
+    ("exact", re.compile(rf"{_num('a')}\s*-?\s*(?P<au>{_YR})\b(?:'s|s'|')?\.?\s+(?:of|in|on|as|working)\b")),
+]
+# Only safe in a job title or a dedicated experience field, where a bare figure is the requirement.
+_TITLE_ONLY_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
+    ("min", re.compile(rf"\(\s*{_num('a')}\s*\+\s*\)")),  # "Engineer (2+)"
+    ("exact", re.compile(rf"{_num('a')}\s*-?\s*(?P<au>{_YR})\b")),  # "Python Developer 3 Yrs"
+]
+
+_MAX_MENTIONS = 200
+_REQUIRED_WORD_RE = re.compile(r"\b(?:required|must|mandatory|essential)\b")
+_EXPERIENCE_WORD_RE = re.compile(r"\b(?:experience|experienced|exp|expertise|exposure|yoe)\b")
+_SENTENCE_BREAK_RE = re.compile(r"[;|•]|[.!?](?=\s)")
+_SENTENCE_ABBREVIATIONS = ("min", "max", "yrs", "yr", "exp", "approx", "no", "sr", "jr", "etc", "e.g", "i.e", "b.e", "b.tech", "m.tech")
+_CLAUSE_BREAK_RE = re.compile(r"[,()\[\]]|\s-\s|\bbut\b|\bthough\b|\bwhereas\b")
+_PREFERRED_RE = re.compile(
+    r"\b(?:preferred|preferably|prefer|nice\s*-?\s*to\s*-?\s*have|good\s*-?\s*to\s*-?\s*have|great\s+to\s+have|"
+    r"is\s+a\s+plus|as\s+a\s+plus|a\s+plus|plus\s+points?|bonus|desirable|desired|ideally|advantage|advantageous|"
+    r"an\s+asset|beneficial|stand\s+out|set\s+you\s+apart|would\s+be\s+(?:great|nice|good|ideal)|optional)\b"
+)
+# Words right after / before a figure that show it is a duration of something else, not experience.
+_DURATION_AFTER_RE = re.compile(
+    r"^\W{0,3}(?:of\s+)?(?:old|age|contract|bond|agreement|service\s+agreement|commitment|degree|diploma|course|"
+    r"program(?:me)?|graduat\w*|pass\s*-?\s*outs?|batch|notice|probation|warranty|roadmap|plan|tenure|lock\s*-?\s*in|"
+    r"internship|training|duration|project|assignment|engagement|career\s+(?:break|gap)|gap|break|visa|ago|back|"
+    r"in\s+business|in\s+a\s+row|history|legacy|valid\w*|vesting|cliff)\b"
+)
+_DURATION_BEFORE_RE = re.compile(
+    r"(?:contract|bond|agreement|notice|probation|duration|tenure|internship|training\s+period|career\s+(?:break|gap)|"
+    r"\bgap\b|\bbreak\b|\bage\b|\baged\b|lock\s*-?\s*in|commitment|for\s+(?:the\s+)?(?:past|last|next)|"
+    r"in\s+(?:the\s+)?(?:past|last|next)|over\s+the\s+(?:past|last|next)|\bevery\b|\bper\b|\beach\b|validity|\bvalid\b|"
+    r"passport|\bvisa\b|warranty|vest\w*|cliff|\besops?\b|extend\w*|renew\w*)[^.\n]{0,25}$"
+)
+# Signs that the text is talking about the applicant ...
+_CANDIDATE_VOICE_RE = re.compile(
+    r"\b(?:you|your|you'll|you've|candidates?|applicants?|must|should|shall|require[sd]?|requirements?|mandatory|"
+    r"minimum|min|at\s*least|atleast|qualifications?|looking\s+for|seeking|seek|needs?|needed|expects?|wants?|hiring|"
+    r"ideal|ideally|proven|hands\s*-?\s*on|relevant|preferred|preferably|eligib\w+|desired|exp|yoe|"
+    r"who\s+(?:has|have|is|are|can)|he|she|incumbent|someone|individual|person)\b"
+)
+# ... or about the employer ("we have 20 years of experience", "a team whose members have 12+ years").
+_COMPANY_SUBJECT_RE = re.compile(
+    r"\b(?:we|we're|we've|our|ours|about\s+us|company|firm|organi[sz]ation|agency|group|teams?|members|founders|"
+    r"leadership|mentors|colleagues|peers)\b"
+)
+_COMPANY_VERB_BEFORE_RE = re.compile(
+    r"\b(?:has|brings?|boasts?|carr(?:y|ies)|celebrat\w+|complet\w+|spanning|spans?)\s+(?:of\s+)?(?:a\s+)?"
+    r"(?:combined\s+|rich\s+|collective\s+)?$"
+)
+_COMPANY_HISTORY_RE = re.compile(
+    r"\b(?:in\s+business|track\s+record|legacy|heritage|history|since\s+(?:19|20)\d\d|founded|established|inception|"
+    r"decades?|market\s+leader|global\s+leader|industry\s+leader|leading\s+provider|pioneer\w*)\b"
+)
+# "With over 25 years of experience in IT services, Acme helps ..." - the figure opens a sentence about someone else.
+_COMPANY_OPENING_RE = re.compile(r"(?:^|:)\W*(?:with|having|backed\s+by|leveraging|drawing\s+on|built\s+on)\s*$")
+_HIGHER_DEGREE_RE = re.compile(
+    r"\b(?:master'?s?|m\.?\s?tech|m\.e\b|m\.?s\b(?!\s*(?:office|sql|excel|azure|dynamics|word|teams|access|project))|"
+    r"m\.?sc|ph\.?\s?d|doctorate|doctoral|post\s*-?\s*graduat\w*)"
+)
+_BACHELOR_DEGREE_RE = re.compile(r"\b(?:bachelor'?s?|b\.?\s?tech|b\.e\b|b\.?s\b|b\.?sc|bca|undergraduate)")
+_OPTION_LINE_RE = re.compile(r"^\W*option\s*\d+\b")
+# Section headings inside a description. A heading is a short line made up of the heading words only.
+_SECTION_HEADINGS: List[Tuple[str, "re.Pattern[str]"]] = [
+    ("main", re.compile(
+        r"(?:about\s+(?:the\s+|this\s+)?(?:role|job|position|opportunity|you)|(?:desired|ideal|preferred)\s+candidate)\b"
+    )),
+    ("preferred", re.compile(
+        r"(?:preferred|desired|bonus|(?:additional|optional)\s+(?:qualifications?|skills?|requirements?|experience)|"
+        r"nice\s*-?\s*to\s*-?\s*haves?|good\s*-?\s*to\s*-?\s*haves?|"
+        r"great\s+to\s+haves?|plus\s+points?|pluses|brownie\s+points?|added\s+advantages?|extra\s+credit|even\s+better|"
+        r"ways\s+to\s+stand\s+out|what\s+(?:will|would)\s+(?:make|set)\s+you|what\s+sets\s+you\s+apart|"
+        r"what\s+would\s+be\s+(?:great|nice))\b"
+    )),
+    ("company", re.compile(
+        r"(?:about\s+(?:us|the\s+company|company|the\s+team|our\s+team|\w+(?:\s+\w+){0,3})|who\s+we\s+are|"
+        r"company\s+(?:overview|profile|description)|our\s+(?:story|company|mission|culture|values)|why\s+(?:join\s+us|us|\w+)|"
+        r"benefits|perks|what\s+we\s+offer|we\s+offer|life\s+at\s+\w+|equal\s+opportunity|disclaimer)\b"
+    )),
+    ("main", re.compile(
+        r"(?:(?:basic|minimum|required|key|must\s*-?\s*have|mandatory|essential|technical|primary|core)\s+)?"
+        r"(?:qualifications?|requirements?|skills?|experience|responsibilities|duties|eligibility|criteria|education|"
+        r"what\s+you(?:'ll|\s+will)?\s+(?:do|bring|need|be\s+doing)|what\s+we\s+need|who\s+you\s+are|you\s+have|"
+        r"you\s+should\s+have|must\s*-?\s*haves?|what\s+we(?:'re|\s+are)\s+looking\s+for|"
+        r"your\s+(?:role|profile|skills|responsibilities)|role|job\s+description|job\s+summary|overview|position|profile|"
+        r"description)\b"
+    )),
+]
+
+
+def _looks_like_heading(original_line: str) -> bool:
+    """A short line with no figure that reads as a heading: ends with ':' or '?', is in capitals, or is Title Case."""
+    stripped = original_line.strip(" \t*#-•>")
+    if not 0 < len(stripped) <= 60 or re.search(r"\d", stripped):
+        return False
+    ellipsis = stripped.endswith(("...", "…"))
+    if stripped.endswith((".", ",", ";")) and not ellipsis:
+        return False
+    words = stripped.rstrip(":?!….").split()
+    if not words or len(words) > 8:
+        return False
+    if stripped.endswith((":", "?")) or ellipsis:
+        return True
+    return len(words) >= 2 and sum(1 for w in words if w[:1].isupper()) / len(words) >= 0.6
+
+
+def _section_of_each_line(lines: Sequence[str], original_lines: Sequence[str]) -> List[str]:
+    """Label every description line as 'main', 'preferred' or 'company' from the heading above it.
+
+    A 'company' or 'preferred' section ends at the next heading, including one this code does not
+    recognise, so an unusual heading ("You're our person if...") cannot hide the requirements below it.
+    """
+    current = "main"
+    labels = []
+    for line, original in zip(lines, original_lines):
+        stripped = line.strip(" \t:*#-•>")
+        recognised = False
+        if 0 < len(stripped) <= 70 and not re.search(r"\d", stripped):
+            for label, pattern in _SECTION_HEADINGS:
+                match = pattern.match(stripped)
+                # A heading has at most a few trailing words ("Preferred qualifications", "About Acme Corp").
+                if match and len(stripped) - match.end() <= 25:
+                    current, recognised = label, True
+                    break
+        if not recognised and current != "main" and _looks_like_heading(original):
+            current = "main"
+        labels.append(current)
+    return labels
+
+
+def _span_between_breaks(text: str, start: int, end: int, pattern: "re.Pattern[str]", skip_abbreviations: bool = False) -> Tuple[int, int]:
+    """Return the (begin, finish) of the stretch of text around [start, end) bounded by pattern matches."""
+    begin, finish = 0, len(text)
+    for match in pattern.finditer(text):
+        if skip_abbreviations and match.group(0) == ".":
+            before = text[:match.start()].rsplit(None, 1)[-1] if text[:match.start()].strip() else ""
+            if before.strip("(") in _SENTENCE_ABBREVIATIONS:
+                continue
+        if match.end() <= start:
+            begin = match.end()
+        elif match.start() >= end:
+            finish = match.start()
+            break
+    return begin, finish
+
+
+def _to_years(value: str, unit: str) -> float:
+    return round(float(value) / 12.0, 2) if unit.startswith("m") else float(value)
+
+
+def _is_employer_statement(section: str, sentence: str, before: str, clause_before: str, opens_line: bool) -> bool:
+    """True when a figure describes the employer or its team rather than what the applicant must have.
+
+    opens_line: the figure is the first thing on its line ("10+ years of experience in ..."), which is
+    how a requirement bullet is written, so a surrounding company section does not rule it out.
+    """
+    governed_by_applicant = _CANDIDATE_VOICE_RE.search(clause_before) or "experience" in clause_before
+    if not governed_by_applicant and (_COMPANY_SUBJECT_RE.search(clause_before) or _COMPANY_VERB_BEFORE_RE.search(before)):
+        return True
+    if _CANDIDATE_VOICE_RE.search(sentence):
+        return False
+    return bool(
+        (section == "company" and not opens_line)
+        or _COMPANY_HISTORY_RE.search(sentence)
+        or (_COMPANY_OPENING_RE.search(before) and "," in sentence[len(before):])
+    )
+
+
+def _experience_mentions(text: str, is_title: bool = False) -> List[Dict[str, Any]]:
+    """Find experience requirements in text.
+
+    Each mention has 'lo' and 'hi' (years, or None for no bound), 'preferred' (nice-to-have only),
+    'degree' ('bachelor', 'higher' or '' - the degree the figure is tied to) and 'option'
+    (it sits on an "Option 1 / Option 2" line).
+    """
+    norm = _normalise_experience_text(text)
+    if not norm.strip():
+        return []
+    patterns = _EXPERIENCE_PATTERNS + (_TITLE_ONLY_PATTERNS if is_title else [])
+    raw: List[Tuple[int, int, float | None, float | None, bool]] = []
+    for kind, pattern in patterns:
+        for match in pattern.finditer(norm):
+            if len(raw) >= _MAX_MENTIONS:
+                break  # far more figures than any real posting has; keeps odd input from taking minutes
+            if any(match.start() < e and s < match.end() for s, e, *_ in raw):
+                continue
+            groups = match.groupdict()
+            unit_b = groups.get("bu")
+            unit_a = groups.get("au") or unit_b or "years"
+            months = unit_a.startswith("m") or bool(unit_b and unit_b.startswith("m"))
+            lo = _to_years(groups["a"], unit_a) if groups.get("a") is not None else None
+            hi = _to_years(groups["b"], unit_b or unit_a) if groups.get("b") is not None else None
+            if kind == "range":
+                if lo is None or hi is None or lo > hi:
+                    continue
+                if groups.get("bplus"):
+                    hi = None  # "2-4+ years" has no upper limit
+            if (lo is not None and lo > 40) or (hi is not None and hi > 50):
+                continue
+            raw.append((match.start(), match.end(), lo, hi, months))
+    raw.sort()
+
+    lines = norm.split("\n")
+    original_lines = str(text).replace("\r", " ").split("\n")
+    if is_title or len(original_lines) != len(lines):
+        sections = ["main"] * len(lines)
+    else:
+        sections = _section_of_each_line(lines, original_lines)
+    line_starts, offset = [], 0
+    for line in lines:
+        line_starts.append(offset)
+        offset += len(line) + 1
+
+    mentions: List[Dict[str, Any]] = []
+    previous: Tuple[int, int, int, bool] | None = None  # line, sentence begin, mention end, degree taken from text after it
+    for index, (start, end, lo, hi, months) in enumerate(raw):
+        line_no = max(i for i, s in enumerate(line_starts) if s <= start)
+        line = lines[line_no]
+        ls, le = start - line_starts[line_no], min(end - line_starts[line_no], len(line))
+        s_begin, s_end = _span_between_breaks(line, ls, le, _SENTENCE_BREAK_RE, skip_abbreviations=True)
+        sentence = line[s_begin:s_end]
+        ss, se = ls - s_begin, le - s_begin
+        c_begin, c_end = _span_between_breaks(sentence, ss, se, _CLAUSE_BREAK_RE)
+        clause_before, clause_after = sentence[c_begin:ss], sentence[se:c_end]
+        mention_text = norm[start:end]
+
+        # The degree this figure is tied to: look between the previous figure and this one, then after it.
+        same_sentence = previous is not None and previous[0] == line_no and previous[1] == s_begin
+        gap_before = sentence[(previous[2] if same_sentence else 0):ss]
+        next_start = len(sentence)
+        if index + 1 < len(raw) and raw[index + 1][0] < line_starts[line_no] + s_end:
+            next_start = raw[index + 1][0] - line_starts[line_no] - s_begin
+        gap_after = sentence[se:next_start]
+        degree, used_after = "", False
+        for gap, is_after in ((gap_before, False), (gap_after, True)):
+            if same_sentence and previous[3] and not is_after:
+                continue  # the previous figure already claimed the degree words between the two
+            if _BACHELOR_DEGREE_RE.search(gap):
+                degree, used_after = "bachelor", is_after
+            elif _HIGHER_DEGREE_RE.search(gap):
+                degree, used_after = "higher", is_after
+            if degree:
+                break
+        previous = (line_no, s_begin, se, used_after)
+
+        # Months are usually a notice period, probation or contract length unless experience is mentioned.
+        has_experience_word = bool(_EXPERIENCE_WORD_RE.search(sentence))
+        if months and not is_title and not has_experience_word:
+            continue
+        # "over 4 years" / "above 3 years" is only a requirement when experience is mentioned.
+        if not is_title and re.match(r"(?:over|above)\b", mention_text) and not has_experience_word:
+            continue
+        if _DURATION_AFTER_RE.search(clause_after) or _DURATION_BEFORE_RE.search(clause_before):
+            continue
+        opens_line = not line[:ls].strip(" \t*#-•>·")
+        if not is_title and _is_employer_statement(sections[line_no], sentence, sentence[:ss], clause_before, opens_line):
+            continue
+        # Under a "preferred" heading a figure is preferred, unless its own sentence says it is required
+        # ("Good to have skills: NA / Minimum 7.5 years of experience is required").
+        in_preferred_section = sections[line_no] == "preferred" and not _REQUIRED_WORD_RE.search(sentence)
+        preferred = not is_title and (in_preferred_section or bool(_PREFERRED_RE.search(sentence[c_begin:c_end])))
+        mentions.append({
+            "lo": lo, "hi": hi, "preferred": preferred, "degree": degree,
+            "option": bool(_OPTION_LINE_RE.match(line)), "sentence": (line_no, s_begin), "text": mention_text,
+        })
+    return mentions
+
+
+def _resolve_experience(mentions: Sequence[Dict[str, Any]]) -> Tuple[float | None, float | None]:
+    """Pick the binding (min, max) years from a list of mentions.
+
+    Required statements beat preferred ones. Where a posting gives alternatives by degree
+    ("Bachelor's with 4 years or Master's with 2 years", "Option 1 / Option 2"), the Bachelor's
+    path is the one that applies to this candidate. After that the applicant has to meet every
+    remaining statement, so the one with the highest minimum decides.
+    """
+    pool = [m for m in mentions if not m["preferred"]] or list(mentions)
+    if not pool:
+        return None, None
+
+    options = [m for m in pool if m["option"]]
+    if len(options) > 1:
+        bachelor_options = [m for m in options if m["degree"] == "bachelor"]
+        with_min = [m for m in options if m["lo"] is not None]
+        chosen = bachelor_options[0] if bachelor_options else (min(with_min, key=lambda m: m["lo"]) if with_min else options[0])
+        pool = [m for m in pool if not m["option"] or m is chosen]
+    # "Bachelor's with 5 years, Master's with 2 years, or 8 years without a degree" in one sentence:
+    # of those alternatives only the Bachelor's figure applies.
+    for sentence in {m["sentence"] for m in pool if m["degree"] == "bachelor"}:
+        if any(m["sentence"] == sentence and m["degree"] == "higher" for m in pool):
+            pool = [m for m in pool if m["sentence"] != sentence or m["degree"] == "bachelor"]
+    if any(m["degree"] != "higher" for m in pool):
+        pool = [m for m in pool if m["degree"] != "higher"]
+
+    with_min = [m for m in pool if m["lo"] is not None]
+    if not with_min:
+        return None, min(m["hi"] for m in pool)
+    binding = max(with_min, key=lambda m: (m["lo"], m["hi"] is not None))
+    lo, hi = binding["lo"], binding["hi"]
+    if hi is None:
+        caps = [m["hi"] for m in pool if m["hi"] is not None and m["hi"] >= lo]
+        hi = min(caps) if caps else None
+    return lo, hi
+
+
+def parse_experience_requirement(job: Dict[str, Any]) -> Tuple[float | None, float | None]:
+    """Return the (min, max) years of experience a posting asks for; None where it states no bound.
+
+    A figure in the job title is the binding one. Otherwise the description decides, then any
+    separate experience field supplied with the record.
+    """
+    for key, is_title in (("title", True), ("description", False), ("experience", True), ("experience_requirement", True)):
+        lo, hi = _resolve_experience(_experience_mentions(str(job.get(key) or ""), is_title=is_title))
+        if lo is not None or hi is not None:
+            return lo, hi
+    return None, None
 
 
 def _extract_experience_range(job: Dict[str, Any], overwrite: bool = False) -> None:
     """Populate minimum/maximum experience from title and description."""
     if not overwrite and (job.get("min_experience_years") is not None or job.get("max_experience_years") is not None):
         return
-    blob = " ".join(str(job.get(k) or "") for k in (
-        "title", "description", "experience_requirement", "experience",
-    ))
-    if not blob.strip():
+    lo, hi = parse_experience_requirement(job)
+    if lo is None and hi is None:
         return
-
-    range_match = EXP_RANGE_PATTERN.search(blob)
-    if range_match:
-        job["min_experience_years"] = float(range_match.group(1))
-        job["max_experience_years"] = float(range_match.group(2))
-        job["experience_requirement"] = f"{int(job['min_experience_years'])}-{int(job['max_experience_years'])} yrs"
-        return
-
-    min_match = EXP_MIN_PATTERN.search(blob) or EXP_PLUS_PATTERN.search(blob) or EXP_YEARS_PATTERN.search(blob)
-    if min_match:
-        job["min_experience_years"] = float(min_match.group(1))
-        job["experience_requirement"] = f"{int(job['min_experience_years'])}+ yrs"
-
-    max_match = EXP_MAX_PATTERN.search(blob)
-    if max_match:
-        job["max_experience_years"] = float(max_match.group(1))
-        if job.get("min_experience_years") is None:
-            job["experience_requirement"] = f"Up to {int(job['max_experience_years'])} yrs"
+    job["min_experience_years"] = lo
+    job["max_experience_years"] = hi
+    if lo is not None and hi is not None:
+        job["experience_requirement"] = f"{lo:g}-{hi:g} yrs"
+    elif lo is not None:
+        job["experience_requirement"] = f"{lo:g}+ yrs"
+    else:
+        job["experience_requirement"] = f"Up to {hi:g} yrs"
 
 
 # ---------------------------------------------------------------------------
@@ -868,28 +1285,65 @@ def enrich_linkedin_jds(
 
         try:
             asyncio.run(_run())
-            return jobs
         except Exception as exc:
             LOG.warning("Async JD fetch encountered exception: %s. Falling back to sync.", exc)
 
-    # Synchronous fallback
-    session = requests.Session()
-    if active_proxy:
-        session.proxies.update({"http": active_proxy, "https": active_proxy})
-
-    for i, j in enumerate(to_enrich):
-        url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{j['job_id']}"
-        try:
-            r = session.get(url, headers=_get_browser_headers(), timeout=12)
-            if r.status_code == 200:
-                _parse_jd_html_into_job(j, r.text, hours)
-            time.sleep(random.uniform(0.6, 1.2))
-        except Exception as err:
-            LOG.debug("Sync JD fetch error for %s: %s", j["job_id"], err)
-        if (i + 1) % 10 == 0:
-            LOG.info("  Enriched %d/%d JDs...", i + 1, len(to_enrich))
-
+    _fetch_missing_descriptions(to_enrich, active_proxy, hours)
+    fetched = sum(1 for j in to_enrich if j.get("description"))
+    LOG.info("Job descriptions fetched for %d of %d jobs.", fetched, len(to_enrich))
     return jobs
+
+
+def _fetch_missing_descriptions(
+    jobs: Sequence[Dict[str, Any]],
+    proxy: str | None,
+    hours: float,
+    budget_seconds: float = 480.0,
+) -> None:
+    """Fetch descriptions the fast concurrent pass did not get, one at a time and slowing down when rate-limited.
+
+    Without its description a job cannot be checked for experience or scored, so this is worth a few
+    minutes. Only jobs with an eligible title are retried, the ones in an eligible location first.
+    """
+    missing = [j for j in jobs if not j.get("description") and title_is_eligible(j)]
+    if not missing:
+        return
+    missing.sort(key=lambda j: not location_is_eligible(j))
+    LOG.info("Retrying %d job descriptions that were not returned...", len(missing))
+    session = requests.Session()
+    if proxy:
+        session.proxies.update({"http": proxy, "https": proxy})
+    started = time.monotonic()
+    deadline = started + budget_seconds
+    pause = 1.5
+    for _ in range(3):
+        for job in missing:
+            if time.monotonic() > deadline:
+                break
+            url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job['job_id']}"
+            try:
+                r = session.get(url, headers=_get_browser_headers(), timeout=15)
+                if r.status_code == 200:
+                    age_before = job.get("age_hours")
+                    _parse_jd_html_into_job(job, r.text, hours)
+                    # The page reports the age as of now. Take off the time this retry pass has been
+                    # running, so a job is not pushed outside the freshness window only because its
+                    # description arrived late.
+                    age_now = _as_float(job.get("age_hours"))
+                    if age_now is not None and job.get("age_hours") != age_before:
+                        job["age_hours"] = round(max(0.0, age_now - (time.monotonic() - started) / 3600.0), 3)
+                    pause = max(1.5, pause * 0.8)
+                elif r.status_code in (403, 429, 999):
+                    pause = min(8.0, pause * 1.5)
+                    time.sleep(pause * 3)
+            except Exception as err:
+                LOG.debug("JD fetch error for %s: %s", job["job_id"], err)
+            time.sleep(pause + random.uniform(0.2, 0.8))
+        missing = [j for j in missing if not j.get("description")]
+        if not missing or time.monotonic() > deadline:
+            break
+    if missing:
+        LOG.warning("%d job descriptions could not be fetched; those jobs are reported as not checked.", len(missing))
 
 
 # ---------------------------------------------------------------------------
@@ -1030,26 +1484,15 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
-def experience_is_eligible(
-    job: Dict[str, Any],
-    candidate_yoe: float = 2.0,
-    min_allowed_yoe: float = 0.0,
-    max_allowed_yoe: float = 5.0,
-) -> bool:
-    """Strict YOE eligibility — candidate has 2 years 4 months experience (use threshold = 2.0):
+def experience_is_eligible(job: Dict[str, Any], candidate_yoe: float = 2.0) -> bool:
+    """Is a candidate with candidate_yoe years inside the experience the posting asks for?
 
-    ACCEPT rules (any one must be true):
-      Range  [min, max]: min <= 2.0 <= max  (covers 0-2, 1-2, 1-3, 0-3, 2-4, 2-5, 2-n)
-      Min-only  (X+)  : min <= 2.0          (covers 2+, 1+, 0+ — excludes 3+, 4+, 5+, 6+, 8+)
-      Max-only         : max >= 2.0          (covers "up to 2 yrs", "up to 3 yrs")
-      No experience stated: always accept (flexible).
-
-    REJECT rules (all applied before range checks):
-      - Seniority level = Director or Executive.
-      - Title contains Staff / Principal / Architect / Director / VP / SDE-III/IV/V.
-      - Stated min > 2.0  (e.g. 3+, 4+, 5+, 6+, 8+, 10+).
-      - Range [min, max] where both min > 2.0 AND max > 2.0  (e.g. 3-5, 4-7, 5-8).
-      - Range [0, 1] (freshers only — max=1 < 2.0).
+    With the default 2.0 years:
+      Range "a - b yrs" : accept when a <= 2.0 <= b   (0-2, 1-2, 2-4, 2-10, 0-3, 1-3 yes; 0-1, 3-5 no)
+      Minimum "a+"      : accept when a <= 2.0        (2+ yes; 3+, 4+, 5+ no)
+      Maximum "up to b" : accept when b >= 2.0
+      Nothing stated    : accept
+    Director and Executive seniority levels are always rejected.
     """
     seniority = str(job.get("seniority_level") or "").strip().lower()
     if any(s in seniority for s in ("director", "executive")):
@@ -1058,55 +1501,10 @@ def experience_is_eligible(
     _extract_experience_range(job)
     minimum = _as_float(job.get("min_experience_years"))
     maximum = _as_float(job.get("max_experience_years"))
-    blob = " ".join(str(job.get(k) or "") for k in (
-        "title", "description", "experience_requirement", "experience",
-    )).lower()
-
-    flexible_phrases = (
-        "any years of experience", "all experience levels", "experience is flexible",
-        "flexible on experience", "open to candidates with 2 years",
-        "consider candidates with 2 years", "less experience will be considered",
-        "equivalent practical experience", "equivalent hands-on experience",
-    )
-    has_flexible = any(phrase in blob for phrase in flexible_phrases)
-
-    # 1. Stated range [min, max]:
-    # ACCEPT if min <= 2.0 <= max.
-    # Examples accepted : 0-2, 1-2, 0-3, 1-3, 2-4, 2-5, 2-10 (any n>=2).
-    # Examples rejected : 0-1 (max=1 < 2.0), 3-5, 4-7, 5-8 (min > 2.0).
-    if minimum is not None and maximum is not None:
-        if minimum <= candidate_yoe <= maximum:
-            return True
-        return has_flexible
-
-    # 2. Min-only (X+): ACCEPT if min <= 2.0.
-    # Accepts: 2+, 1+, 0+. Rejects: 3+, 4+, 5+, 6+, 8+, 10+.
-    if minimum is not None:
-        if minimum <= candidate_yoe:
-            return True
-        return has_flexible
-
-    # 3. Max-only ("up to X yrs"): ACCEPT if max >= 2.0.
-    # Accepts: up to 2 yrs, up to 3 yrs. Rejects: up to 1 yr.
-    if maximum is not None:
-        return maximum >= candidate_yoe or has_flexible
-
-    # 4. Fallback regex in blob (when structured fields missing)
-    rm = EXP_RANGE_PATTERN.search(blob)
-    if rm:
-        lo, hi = float(rm.group(1)), float(rm.group(2))
-        if lo <= candidate_yoe <= hi:
-            return True
-        return has_flexible
-
-    mm = EXP_MIN_PATTERN.search(blob) or EXP_PLUS_PATTERN.search(blob) or EXP_YEARS_PATTERN.search(blob)
-    if mm:
-        val = float(mm.group(1))
-        if val <= candidate_yoe:
-            return True
-        return has_flexible
-
-    # 5. No experience stated → accept (flexible role)
+    if minimum is not None and minimum > candidate_yoe:
+        return False
+    if maximum is not None and maximum < candidate_yoe:
+        return False
     return True
 
 
@@ -1180,24 +1578,40 @@ def source_is_allowed(job: Dict[str, Any]) -> bool:
     return ("linkedin" in source or bool(url)) and url.startswith("https://www.linkedin.com/jobs/view/")
 
 
+DESCRIPTION_UNAVAILABLE = "Description not available"
+
+
+def experience_is_unverified(job: Dict[str, Any]) -> bool:
+    """True when LinkedIn returned no description and the title states no experience, so nothing could be checked."""
+    if str(job.get("description") or "").strip():
+        return False
+    _extract_experience_range(job)
+    return _as_float(job.get("min_experience_years")) is None and _as_float(job.get("max_experience_years")) is None
+
+
+def rejection_reason(job: Dict[str, Any], enforce_title: bool = True, candidate_yoe: float = 2.0) -> str:
+    """Name the first preference a job fails, or return "" when it passes all of them."""
+    if not source_is_allowed(job):
+        return "Not a LinkedIn job link"
+    if not location_is_eligible(job):
+        return "Location"
+    if not experience_is_eligible(job, candidate_yoe=candidate_yoe):
+        return "Experience"
+    if not employment_is_eligible(job):
+        return "Not full-time"
+    if enforce_title and not title_is_eligible(job):
+        return "Job title"
+    if experience_is_unverified(job):
+        return DESCRIPTION_UNAVAILABLE
+    return ""
+
+
 def filter_job_preferences(
     jobs: Sequence[Dict[str, Any]],
     enforce_title: bool = True,
     candidate_yoe: float = 2.0,
-    min_yoe: float = 0.0,
-    max_yoe: float = 5.0,
 ) -> List[Dict[str, Any]]:
-    eligible = []
-    for job in jobs:
-        if (
-            source_is_allowed(job)
-            and location_is_eligible(job)
-            and experience_is_eligible(job, candidate_yoe=candidate_yoe, min_allowed_yoe=min_yoe, max_allowed_yoe=max_yoe)
-            and employment_is_eligible(job)
-            and (not enforce_title or title_is_eligible(job))
-        ):
-            eligible.append(job)
-    return eligible
+    return [job for job in jobs if not rejection_reason(job, enforce_title=enforce_title, candidate_yoe=candidate_yoe)]
 
 
 def html_table(jobs: Sequence[Dict[str, Any]], include_match: bool = True) -> str:
@@ -1336,7 +1750,38 @@ def send_push_notification(title: str, message: str, click_url: str = "", priori
 DEFAULT_RECIPIENTS = ["sukruth1435@gmail.com", "akhilarohithayepuri@gmail.com"]
 
 
-def build_email_html(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[str, Any]]) -> str:
+def unchecked_jobs_html(unchecked: Sequence[Dict[str, Any]]) -> str:
+    """Section listing jobs whose description LinkedIn did not return, so the reader can open them by hand."""
+    if not unchecked:
+        return ""
+    rows = []
+    for job in unchecked[:100]:
+        url = html.escape(clean_job_url(job), quote=True)
+        title = html.escape(str(job.get("title") or "Untitled role"))
+        vals = [
+            f'<a href="{url}">{title}</a>' if url.startswith("https://") else title,
+            html.escape(str(job.get("company") or "Unknown")),
+            html.escape(str(job.get("location") or "Not specified")),
+            html.escape(str(job.get("freshness_badge") or job.get("posted_time") or "Unknown")),
+        ]
+        rows.append("<tr>" + "".join(f"<td>{v}</td>" for v in vals) + "</tr>")
+    th = "".join(f"<th>{h}</th>" for h in ("Job title", "Company", "Location", "Posted"))
+    return (
+        f'<h3 style="margin-top:28px">3. Not checked ({len(unchecked)})</h3>'
+        "<p>LinkedIn did not return the description for these jobs, so their experience requirement and skills "
+        "could not be checked. They passed the location and job-title filters; open them to check by hand.</p>"
+        '<div style="overflow-x:auto"><table cellpadding="7" cellspacing="0" '
+        'style="border-collapse:collapse;width:100%;font-size:12px">'
+        f'<thead><tr style="background:#5f6368;color:#fff">{th}</tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table></div>'
+    )
+
+
+def build_email_html(
+    matched: Sequence[Dict[str, Any]],
+    all_scraped: Sequence[Dict[str, Any]],
+    unchecked: Sequence[Dict[str, Any]] = (),
+) -> str:
     run_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
     return f"""<!doctype html><html><body style="font-family:Arial,sans-serif;color:#202124">
     <h2>LinkedIn Job Match Monitor Report</h2>
@@ -1348,11 +1793,59 @@ def build_email_html(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Di
     <h3 style="margin-top:28px">2. All newly discovered jobs scraped ({len(all_scraped)})</h3>
     <p>This table includes every new job collected in this run, including jobs below 60%. Sorted highest first.</p>
     {html_table(all_scraped)}
+    {unchecked_jobs_html(unchecked)}
     <p style="font-size:11px;color:#666;margin-top:22px">Automated report. Verify job requirements and eligibility on the employer's application page.</p>
     </body></html>"""
 
 
-def send_gmail(subject: str, html_body: str, attachment: Path | None = None) -> None:
+def build_status_email_html(collected: Sequence[Dict[str, Any]], hours: float, candidate_yoe: float) -> str:
+    """Body of the mail sent when a run finds no eligible job: what was scanned and why each job was filtered out."""
+    run_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
+    reasons = [(job, rejection_reason(job, candidate_yoe=candidate_yoe)) for job in collected]
+    counts: Dict[str, int] = {}
+    for _, reason in reasons:
+        counts[reason] = counts.get(reason, 0) + 1
+    summary = ", ".join(f"{html.escape(reason)}: {count}" for reason, count in sorted(counts.items(), key=lambda kv: -kv[1]))
+    if not collected:
+        detail = (
+            "<p>LinkedIn returned no job listings for this window. That can mean nothing new was posted, "
+            "or that LinkedIn rate-limited this scan.</p>"
+        )
+    else:
+        rows = []
+        for job, reason in reasons[:100]:
+            url = html.escape(clean_job_url(job), quote=True)
+            title = html.escape(str(job.get("title") or "Untitled role"))
+            title_cell = f'<a href="{url}">{title}</a>' if url.startswith("https://") else title
+            vals = [
+                title_cell,
+                html.escape(str(job.get("company") or "Unknown")),
+                html.escape(str(job.get("location") or "Not specified")),
+                html.escape(experience_label(job)),
+                html.escape(reason),
+            ]
+            rows.append("<tr>" + "".join(f"<td>{v}</td>" for v in vals) + "</tr>")
+        th = "".join(f"<th>{h}</th>" for h in ("Job title", "Company", "Location", "Experience", "Filtered out by"))
+        more = f"<p>Showing the first 100 of {len(reasons)} jobs.</p>" if len(reasons) > 100 else ""
+        detail = (
+            f"<p>Filtered out by: {summary}.</p>"
+            '<div style="overflow-x:auto"><table cellpadding="7" cellspacing="0" '
+            'style="border-collapse:collapse;width:100%;font-size:12px">'
+            f'<thead><tr style="background:#17365d;color:#fff">{th}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>{more}'
+        )
+    return f"""<!doctype html><html><body style="font-family:Arial,sans-serif;color:#202124">
+    <h2>LinkedIn Job Match Monitor: no eligible jobs this run</h2>
+    <p>Run time: <b>{run_time}</b></p>
+    <p>Scanned <b>{len(collected)}</b> LinkedIn job(s) posted in the last {hours:g} hour(s).
+    None passed the location, experience ({candidate_yoe:g} years), full-time and job-title filters.</p>
+    {detail}
+    <p style="font-size:11px;color:#666;margin-top:22px">Automated report. This mail is sent on every run, including runs with no matches.</p>
+    </body></html>"""
+
+
+def send_gmail(subject: str, html_body: str, attachment: Path | None = None) -> bool:
+    """Send the mail. Returns False only when delivery was attempted and failed after three tries."""
     sender = os.environ.get("GMAIL_ADDRESS", "").strip()
     app_password = os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
     recipients_raw = os.environ.get("JOB_ALERT_TO", "").strip()
@@ -1367,7 +1860,7 @@ def send_gmail(subject: str, html_body: str, attachment: Path | None = None) -> 
             "Direct email delivery to %s skipped. Add these secrets in Settings -> Secrets and variables -> Actions.",
             ", ".join(recipients),
         )
-        return
+        return True
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -1384,17 +1877,23 @@ def send_gmail(subject: str, html_body: str, attachment: Path | None = None) -> 
             filename=attachment.name,
         )
 
-    try:
-        context = ssl.create_default_context()
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
-            server.ehlo()
-            server.starttls(context=context)
-            server.ehlo()
-            server.login(sender, app_password)
-            server.send_message(msg)
-        LOG.info("Gmail match report successfully sent to: %s", ", ".join(recipients))
-    except Exception as exc:
-        LOG.error("Failed to send email to %s: %s", ", ".join(recipients), exc)
+    attempts = 3
+    for attempt in range(1, attempts + 1):
+        try:
+            context = ssl.create_default_context()
+            with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
+                server.ehlo()
+                server.starttls(context=context)
+                server.ehlo()
+                server.login(sender, app_password)
+                server.send_message(msg)
+            LOG.info("Gmail report successfully sent to: %s", ", ".join(recipients))
+            return True
+        except Exception as exc:
+            LOG.error("Failed to send email to %s (attempt %d of %d): %s", ", ".join(recipients), attempt, attempts, exc)
+            if attempt < attempts:
+                time.sleep(10 * attempt)
+    return False
 
 
 def create_excel(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[str, Any]]) -> Path:
@@ -1448,8 +1947,6 @@ def main() -> int:
                         help="Intake source: 'auto' (live guest scraper + file fallback), 'guest' (live scraper), or 'file' (JSON only)")
     parser.add_argument("--proxy", type=str, default=None, help="HTTP/HTTPS/SOCKS proxy URL (or set via LINKEDIN_PROXY / HTTPS_PROXY env)")
     parser.add_argument("--candidate-yoe", type=float, default=2.0, help="Candidate years of experience (default 2.0)")
-    parser.add_argument("--min-yoe", type=float, default=0.0, help="Minimum acceptable job YOE (default 0.0)")
-    parser.add_argument("--max-yoe", type=float, default=5.0, help="Maximum acceptable job YOE (default 5.0)")
     parser.add_argument("--keywords", type=str, default=None, help="Optional comma-separated search terms override")
     parser.add_argument("--location", type=str, default=None, help="Optional comma-separated search locations override")
     parser.add_argument("--no-jd", action="store_true", help="Skip full JD enrichment (listing cards only)")
@@ -1466,15 +1963,10 @@ def main() -> int:
         location=args.location,
         no_jd=args.no_jd,
     )
-    all_found = filter_job_preferences(
-        collected,
-        candidate_yoe=args.candidate_yoe,
-        min_yoe=args.min_yoe,
-        max_yoe=args.max_yoe,
-    )
+    all_found = filter_job_preferences(collected, candidate_yoe=args.candidate_yoe)
     LOG.info(
-        "Collected %d jobs; %d meet location, %.1f-year experience (range %.1f-%.1f), full-time, and target title eligibility.",
-        len(collected), len(all_found), args.candidate_yoe, args.min_yoe, args.max_yoe,
+        "Collected %d jobs; %d meet location, %.1f-year experience, full-time, and target title eligibility.",
+        len(collected), len(all_found), args.candidate_yoe,
     )
     for job in all_found:
         score_job(job)
@@ -1501,7 +1993,12 @@ def main() -> int:
                 f"Scan finished: Evaluated {len(collected)} fresh LinkedIn jobs. No matching roles found in the 1h window.",
                 priority="default",
             )
-            return 0
+            # Every run sends a mail, so a quiet hour is distinguishable from a run that never happened.
+            mailed = send_gmail(
+                f"LinkedIn job scan: no eligible jobs | {run_stamp}",
+                build_status_email_html(collected, hours=args.hours, candidate_yoe=args.candidate_yoe),
+            )
+            return _exit_code(mailed)
 
     jobs_to_report.sort(key=lambda j: (int(j.get("skill_match_pct", 0)), 1 if j.get("is_easy_apply") else 0, str(j.get("title", "")).lower()), reverse=True)
     matched = [j for j in jobs_to_report if int(j.get("skill_match_pct", 0)) >= args.min_match]
@@ -1527,13 +2024,41 @@ def main() -> int:
         send_push_notification(title, push_msg, click_url=issue_url or top_job.get("job_url", ""), priority="high")
 
     # Send email notification (to akhilarohithayepuri@gmail.com) with attached Excel report
-    send_gmail(title, build_email_html(matched, all_scraped), attachment=report_path)
+    unchecked = [j for j in collected if rejection_reason(j, candidate_yoe=args.candidate_yoe) == DESCRIPTION_UNAVAILABLE]
+    mailed = send_gmail(title, build_email_html(matched, all_scraped, unchecked), attachment=report_path)
 
     seen_ids.update(str(j.get("job_id")) for j in jobs_to_report)
     save_seen_ids(seen_ids)
     LOG.info("Excel report saved: %s", report_path)
+    return _exit_code(mailed)
+
+
+def _exit_code(mailed: bool) -> int:
+    """A run whose mail could not be delivered is reported as failed, so it shows red on the Actions tab."""
+    if not mailed:
+        LOG.error("The scan finished but its email could not be sent; marking this run as failed.")
+        return 1
     return 0
 
 
+def run() -> int:
+    """Run main(); if it crashes, send a failure mail before re-raising."""
+    try:
+        return main()
+    except Exception as exc:
+        # A crashed run still sends a mail, so a missing hourly mail always means the run never started.
+        LOG.exception("Job scan failed.")
+        failed_at = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %I:%M %p IST")
+        send_gmail(
+            f"LinkedIn job scan FAILED | {failed_at}",
+            '<!doctype html><html><body style="font-family:Arial,sans-serif;color:#202124">'
+            "<h2>LinkedIn Job Match Monitor: this run failed</h2>"
+            f"<p>The scan at <b>{failed_at}</b> stopped with an error, so no jobs were checked this hour.</p>"
+            f"<p>Error: <code>{html.escape(repr(exc))}</code></p>"
+            "<p>The full log is on the repository's Actions tab.</p></body></html>",
+        )
+        raise
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run())
