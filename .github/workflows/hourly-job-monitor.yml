@@ -3,6 +3,18 @@ name: Job Match Monitor
 # Hourly runs are started by .github/workflows/hourly-timer.yml (via
 # workflow_dispatch), not by a `schedule` cron here: GitHub's cron is
 # best-effort and was skipping most hourly slots.
+#
+# The run has two stages:
+#   search  - five workers in parallel: one per city, and two for India-remote
+#             (the largest search). Each worker is a separate runner with its
+#             own address, so LinkedIn's rate limit is spread over five machines
+#             instead of one. A worker only searches and reads job
+#             descriptions, then hands over its jobs and the list of searches
+#             it covered as a file.
+#   report  - merges the workers' files, filters, scores, and sends the mail,
+#             issue and push. Any search no worker file covers (a worker
+#             failed, or a keyword was added to the script but not here) is
+#             run by the report job itself, so the hourly report is complete.
 on:
   workflow_dispatch:
     inputs:
@@ -39,7 +51,81 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  search:
+    name: Search ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      # One worker failing must not stop the others.
+      fail-fast: false
+      matrix:
+        # location: one of SEARCH_LOCATIONS in job_match_runner.py ("Remote" = remote jobs anywhere in India).
+        # keywords: empty = every keyword in SEARCH_TERMS; otherwise this worker's share of them.
+        # Nothing breaks if this list falls out of step with the script: the report job runs whatever is missing.
+        include:
+          - name: Hyderabad
+            location: Hyderabad
+            keywords: ''
+          - name: Bengaluru
+            location: Bengaluru
+            keywords: ''
+          - name: Chennai
+            location: Chennai
+            keywords: ''
+          - name: Remote-1
+            location: Remote
+            keywords: 'AI Engineer,Generative AI,LLM Engineer,Python Developer,Django'
+          - name: Remote-2
+            location: Remote
+            keywords: 'Software Engineer,Full Stack Developer,Backend Developer'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Search LinkedIn and read job descriptions
+        env:
+          LINKEDIN_JOBS_JSON: data/linkedin_jobs.json
+          LINKEDIN_PROXY: ${{ secrets.LINKEDIN_PROXY }}
+          # Stop searching after 9 minutes and go on with what was found, so a
+          # rate-limited worker cannot hold up the report.
+          SEARCH_BUDGET_SECONDS: '540'
+          SHARD_NAME: ${{ matrix.name }}
+          SEARCH_LOCATION: ${{ matrix.location }}
+          SHARD_KEYWORDS: ${{ matrix.keywords }}
+          INPUT_HOURS: ${{ inputs.hours || '1' }}
+          INPUT_KEYWORDS: ${{ inputs.keywords }}
+        run: |
+          ARGS=(--collect-only --location "$SEARCH_LOCATION" --output "shards/$SHARD_NAME.json" --hours "$INPUT_HOURS" --target-count 0)
+          # Keywords typed when starting the run by hand replace this worker's share.
+          KEYWORDS="${INPUT_KEYWORDS:-$SHARD_KEYWORDS}"
+          if [ -n "$KEYWORDS" ]; then
+            ARGS+=(--keywords "$KEYWORDS")
+          fi
+          python job_match_runner.py "${ARGS[@]}"
+
+      - name: Hand the jobs to the report job
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.name }}
+          path: shards/*.json
+          if-no-files-found: error
+          retention-days: 1
+
   scan-and-notify:
+    name: Filter, score and notify
+    needs: search
+    # Run even when a search worker failed: the script then searches that location itself.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -64,7 +150,16 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
 
-      - name: Run job search, scoring, and notification
+      - name: Collect the search workers' results
+        uses: actions/download-artifact@v4
+        # Nothing to download (every worker failed) is not fatal: the script searches by itself then.
+        continue-on-error: true
+        with:
+          pattern: shard-*
+          path: shards
+          merge-multiple: true
+
+      - name: Filter, score, and notify
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -84,7 +179,8 @@ jobs:
           INPUT_CANDIDATE_YOE: ${{ inputs.candidate_yoe || '2.0' }}
           INPUT_FORCE_NOTIFY: ${{ inputs.force_notify }}
         run: |
-          ARGS=(--hours "$INPUT_HOURS" --target-count 0 --min-match 60 --candidate-yoe "$INPUT_CANDIDATE_YOE")
+          mkdir -p shards
+          ARGS=(--from-shards shards --hours "$INPUT_HOURS" --target-count 0 --min-match 60 --candidate-yoe "$INPUT_CANDIDATE_YOE")
           if [ -n "$INPUT_KEYWORDS" ]; then
             ARGS+=(--keywords "$INPUT_KEYWORDS")
           fi

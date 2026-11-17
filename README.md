@@ -1,12 +1,20 @@
 # LinkedIn Job Match Monitor — GitHub Actions
 
-This package scores collected jobs against the candidate skill profile, keeps a seen-job history, creates a GitHub Issue for newly discovered 60%+ matches, and creates an Excel workbook with two sheets.
+Every hour this searches LinkedIn for jobs posted in the last hour, keeps the ones that fit the candidate (location, years of experience, full-time, Python developer role), scores them against the candidate's skills, and sends one email. New 60%+ matches also get a GitHub Issue and a phone push.
+
+## How a run works
+
+1. **Timer.** `hourly-timer.yml` starts a run on the hour (see Schedule below).
+2. **Search workers.** Five parallel jobs search LinkedIn (Hyderabad, Bengaluru, Chennai, and two for India-remote) and read the description of every job whose title and location could fit.
+3. **Report.** One job merges the workers' results, applies the filters, scores, removes duplicates and already-reported openings, and sends the email, issue and push.
+
+The filters are tested offline by `tests/` (run `python tests/test_experience.py`, `python tests/test_role_fit.py`, `python tests/test_pipeline.py`); the Tests workflow runs them on every change.
 
 ## Notification behavior
 
-- **No Gmail, SMTP, Telegram, or external notification service is used.**
+- **Every run sends one email** through Gmail SMTP (secrets `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, optional `JOB_ALERT_TO`): the match report, a "nothing new" mail, a "no eligible jobs" mail, or a failure mail.
 - A new GitHub Issue is created only when at least one newly discovered job scores at or above 60%.
-- The issue is assigned to the GitHub user who last modified the scheduled workflow, which normally triggers an assignment notification. Check GitHub notification settings and watch the repository for Issues.
+- The issue is assigned to the repository owner, which triggers a GitHub assignment notification. Check GitHub notification settings and watch the repository for Issues.
 - Issue table 1: new jobs scoring 60%+, sorted by match percentage descending.
 - Issue table 2: all newly discovered jobs in that run, including below-60% jobs, sorted descending.
 - Every row includes a direct application link, score, location/work mode, experience estimate, matched skills, and other detected technical skills.
@@ -128,11 +136,14 @@ If you wish to route LinkedIn requests through a dedicated proxy, add your proxy
 
 - **Locations:** Strictly Hyderabad, Bengaluru ("bgl"), Chennai (all work modes: Onsite, In-Office, Hybrid, Remote) and India Remote. Worldwide remote and other cities (Pune, Noida, Mumbai) are strictly excluded.
 - **Employment type:** Strictly full-time jobs only (excludes internships, trainees, contractors, evaluators, and part-time).
-- **Apply type ratio:** 80% Easy Apply (`f_AL=true`) and 20% Normal Apply jobs.
+- **Apply type:** every search is run twice, once for Easy Apply (`f_AL=true`) and once for everything else, and both passes read all results. Each row is labelled Easy Apply or Normal Apply.
 - **Experience (YOE):** A job is kept when the candidate's 2 years fall inside the experience the posting asks for. A range is accepted when it contains 2 (0-2, 1-2, 0-3, 1-3, 2-4, 2-10); a minimum is accepted when it is 2 or less (1+, 2+); an upper limit is accepted when it is 2 or more. Everything else is excluded (0-1 fresher only, 3-5, 3+, 4+, 5+). A figure in the job title wins over the description; "preferred" figures do not count when a required one exists; company age, contract length, notice period and similar durations are ignored. A job that states no experience is kept. A job whose description LinkedIn did not return cannot be checked, so it is not counted as a match and is listed separately in the email as "Not checked". Senior titles (Staff, Principal, Architect, Director, VP, SDE 3/4/5) are excluded.
 - **Posting age:** Strictly jobs posted within 1 hour (<= 1.0h freshness window).
 - **Search:** each keyword (AI Engineer, Generative AI, LLM Engineer, Software Engineer, Python Developer, Django, Full Stack Developer, Backend Developer) is searched separately in Hyderabad, Bengaluru, Chennai and India-remote (`SEARCH_TERMS` and `SEARCH_LOCATIONS` in `job_match_runner.py`).
-- **Skill score:** skills the candidate has divided by all skills the posting names. Other stacks (Java, Spring, .NET, C#, C++, Angular, PHP and similar) are recognised as skills the candidate lacks, so a posting built on them scores low.
+- **Role fit (Python developer roles only):** a posting is removed when (1) its title names another stack or job family (Java, Kotlin, .NET, C++, Go, Node.js, Angular, mobile, Salesforce/SAP, embedded, DevOps, data engineering, marketing, support, ...), (2) the posting never names Python or a Python-only library such as Django, FastAPI or LangChain (on hand-checked samples, postings that talk about AI but never name Python were Node, DevOps, C or product-manager jobs six times out of seven), (3) its description asks for another programming language outright, or its frameworks are another language's (Spring, Hibernate, ASP.NET), or (4) the description itself says the job is something else (data pipelines only, an ERP platform throughout, "seeking a Product Manager"). Titles with no developer word (consultant, analyst, specialist, scientist, researcher) are removed. A language that is only offered as an alternative ("Python, Java or Go") or only listed under nice-to-have does not remove the posting. Removed postings are listed at the bottom of the email with the reason (`role_mismatch` in `job_match_runner.py`).
+- **Skill score:** skills the candidate has divided by the skills the posting asks for. Skills that appear only in the company blurb are ignored, nice-to-have skills count half, a language offered only as an alternative to Python is not counted as missing, and a posting that names fewer than 5 skills is scored out of 5 (so "Azure, Git, SQL" is 60%, not 100%).
+- **Duplicates:** one opening posted several times (once per city, or re-posted under a new LinkedIn id) is shown once, with the other cities named in the Location column, and is not reported again in a later hour.
+- **Parallel search workers:** on GitHub the search runs as five parallel jobs (one per city, two for India-remote), each on its own runner, so LinkedIn's rate limit is spread over five addresses. Each worker hands over its jobs and the list of searches it covered. The report job merges them and runs any search no worker covered itself, saying so in the email, so a failed worker delays the report but never shrinks it.
 - **Senior titles:** a Senior / Sr / Lead title is excluded when the posting states no years; when it states years, the figure decides.
 - **Target roles:** AI Engineer, Software Engineer, Python Backend, Python Full Stack, Python Developer, and Python engineering jobs.
 
