@@ -32,7 +32,7 @@ The work mode in the mail name and in the tables is read from the posting's own 
 
 An opening is alerted once: the watcher remembers what it sent (also when the same opening is re-posted under a new LinkedIn id). The hourly report is unchanged and still lists these jobs with all the others.
 
-**How it keeps running.** Each run scans for 25 minutes (6 scans) and then starts the next run, so one "Hyderabad Fast Alert" run is always in progress, each on a fresh runner. `timer-watchdog.yml` restarts it if it ever stops. To stop the alerts, disable the **Hyderabad Fast Alert** workflow on the Actions tab; to start them again, enable it and run it once. `INTERVAL_MINUTES` in the workflow and the `watch_minutes` input set the pace; the `min_match` and `candidate_yoe` inputs set the rule.
+**How it keeps running.** Each run makes 5 scans, one every 5 minutes (about 21 minutes in all), and then starts the next run, so one "Hyderabad Fast Alert" run is always in progress, each on a fresh runner. `timer-watchdog.yml` restarts it if it ever stops. To stop the alerts, disable the **Hyderabad Fast Alert** workflow on the Actions tab; to start them again, enable it and run it once. `INTERVAL_MINUTES` in the workflow and the `watch_minutes` input set the pace; the `min_match` and `candidate_yoe` inputs set the rule.
 
 To see what an alert would look like without sending anything: `python job_match_runner.py --fast-alert --source guest --dry-run` (writes `reports/hyderabad_alert_preview.html`).
 

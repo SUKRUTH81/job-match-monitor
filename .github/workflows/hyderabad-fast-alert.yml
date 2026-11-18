@@ -14,7 +14,8 @@ name: Hyderabad Fast Alert
 #
 # How it keeps running: each run scans Hyderabad every INTERVAL_MINUTES for WATCH_MINUTES and then
 # starts the next run, so there is always one run in progress. timer-watchdog.yml restarts the
-# chain if it ever stops. Every run is a new runner, so LinkedIn sees a new address every half hour.
+# chain if it ever stops. Every run is a new runner, so LinkedIn sees a new address about every
+# 20 minutes (no scan starts after WATCH_MINUTES, so a run makes 5 scans).
 #
 # To start it by hand: Actions -> Hyderabad Fast Alert -> Run workflow.
 # To stop it: Actions -> Hyderabad Fast Alert -> "..." -> Disable workflow (the watchdog leaves a
