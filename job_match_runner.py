@@ -20,7 +20,7 @@ import re
 import smtplib
 import ssl
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Set, Tuple
@@ -1496,6 +1496,11 @@ def _search_budget_seconds() -> float:
         return 1200.0
 
 
+# Search pages asked for and search pages LinkedIn refused, since the last reset. The Hyderabad
+# watcher reads this to notice that its runner's address is being rate-limited.
+SEARCH_STATS: Dict[str, int] = {"pages": 0, "failed": 0}
+
+
 def scrape_linkedin_guest_jobs(
     hours: float,
     target_count: int,
@@ -1503,11 +1508,16 @@ def scrape_linkedin_guest_jobs(
     proxy: str | None = None,
     keywords_list: Sequence[str] | None = None,
     locations_list: Sequence[str] | None = None,
+    empty_pages_to_stop: int = 2,
+    budget_seconds: float | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Direct live guest-endpoint scraper for LinkedIn jobs.
     Queries https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search
     with dynamic f_TPR, rotating browser headers, backoff, and optional proxy.
+
+    empty_pages_to_stop: a search ends after this many result pages in a row came back empty.
+    budget_seconds: longest the whole search may run (default: SEARCH_BUDGET_SECONDS).
     """
     if requests is None or BeautifulSoup is None:
         LOG.error("requests or beautifulsoup4 not installed. Cannot run live LinkedIn scraper.")
@@ -1547,7 +1557,8 @@ def scrape_linkedin_guest_jobs(
 
     # A search that LinkedIn keeps rate-limiting must not eat the whole run: stop after the budget
     # and go on with the cards collected so far.
-    search_deadline = time.monotonic() + _search_budget_seconds()
+    search_deadline = time.monotonic() + (budget_seconds or _search_budget_seconds())
+    empty_pages_to_stop = max(1, int(empty_pages_to_stop))
 
     for term in terms:
         for loc in locs:
@@ -1569,7 +1580,7 @@ def scrape_linkedin_guest_jobs(
                 start = 0
                 consecutive_empty = 0
 
-                while mode_jobs < mode_cap and consecutive_empty < 2 and time.monotonic() <= search_deadline:
+                while mode_jobs < mode_cap and consecutive_empty < empty_pages_to_stop and time.monotonic() <= search_deadline:
                     url = (
                         f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
                         f"?keywords={encoded_kw}&location={encoded_loc}&f_TPR={f_tpr}&f_JT=F{mode['param']}{remote_param}&start={start}"
@@ -1598,6 +1609,9 @@ def scrape_linkedin_guest_jobs(
                             LOG.warning("Network error querying LinkedIn: %s", err)
                             time.sleep(backoff.wait_seconds(attempt))
 
+                    SEARCH_STATS["pages"] += 1
+                    if resp is None:
+                        SEARCH_STATS["failed"] += 1
                     if not resp or not resp.text.strip():
                         consecutive_empty += 1
                         start += 10
@@ -1907,6 +1921,8 @@ def collect_jobs(
     keywords: str | None = None,
     location: str | None = None,
     no_jd: bool = False,
+    skip_ids: Set[str] | None = None,
+    search_options: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
     """Collect LinkedIn job records via live guest scraping and/or local JSON intake.
 
@@ -1915,6 +1931,9 @@ def collect_jobs(
                   if file is empty or missing.
       - 'guest' : Strictly runs live guest-endpoint scraper.
       - 'file'  : Only reads from local JSON file (LINKEDIN_JOBS_JSON).
+
+    skip_ids: job ids the caller has already judged; they are dropped before any description is fetched.
+    search_options: extra arguments for scrape_linkedin_guest_jobs (empty_pages_to_stop, budget_seconds).
     """
     accepted: List[Dict[str, Any]] = []
     seen: Set[str] = set()
@@ -1947,6 +1966,7 @@ def collect_jobs(
             proxy=proxy,
             keywords_list=kw_list,
             locations_list=loc_list,
+            **(search_options or {}),
         )
 
     all_raw = file_records + guest_records
@@ -1966,6 +1986,8 @@ def collect_jobs(
         if not job_id or job_id in seen:
             continue
         seen.add(job_id)
+        if skip_ids and job_id in skip_ids:
+            continue
 
         age = _verified_posting_age(job)
         if age is None or age >= float(hours):
@@ -2750,6 +2772,386 @@ def create_excel(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[s
     return path
 
 
+# ---------------------------------------------------------------------------
+# Hyderabad fast alert
+# ---------------------------------------------------------------------------
+# A second, much more frequent scan beside the hourly report (`--fast-alert`). It searches Hyderabad
+# only, every few minutes, and notifies at once when a new opening is all of:
+#   - in Hyderabad (any work mode), full-time, and a role the hourly report would keep,
+#   - a skill match of FAST_ALERT_MIN_MATCH % or more,
+#   - asking for experience that includes the candidate's years.
+# A posting that states no experience never starts an alert. If it meets everything else it is held
+# back and listed in a second table of the next alert that does go out.
+
+FAST_ALERT_LOCATION = "Hyderabad"
+HYDERABAD_NAMES = ("hyderabad", "secunderabad")
+FAST_ALERT_MIN_MATCH = 80
+FAST_STATE_FILE = DATA_DIR / "hyderabad_alert_state.json"
+# A held-back opening (no experience stated) is dropped when no alert goes out within this many hours of its posting.
+FAST_HELD_HOURS = 24.0
+# Longest one pass may spend searching. A rate-limited runner then gives up and the next runner takes over.
+FAST_SEARCH_BUDGET_SECONDS = 150.0
+WORK_MODE_UNKNOWN = "work mode not stated"
+
+# LinkedIn's public job page has no work-mode field and its public search ignores the work-mode
+# filter, so the posting's own words are the only source for Remote / Hybrid / On-site.
+_WORK_MODE_FIELD = r"\bwork(?:ing|place)?\s*(?:mode|model|type|arrangement|location|style|set-?up)\s*[:\-]\s*"
+_DAYS_IN_OFFICE = r"\s*days?\s+(?:a|per|in\s+a|every|each)\s+week\s+(?:in|from|at)\s+(?:the\s+|our\s+)?office\b"
+_HYBRID_MODE_RE = re.compile(
+    _WORK_MODE_FIELD + r"hybrid\b|"
+    r"\bhybrid\s+(?:work\w*|model|role|position|mode|schedule|set-?up|arrangement|policy|environment|opportunity|job)\b|"
+    r"[(\[]\s*hybrid\s*[)\]]|"
+    r"\b[1-4]" + _DAYS_IN_OFFICE,
+    re.I,
+)
+_ONSITE_MODE_RE = re.compile(
+    _WORK_MODE_FIELD + r"(?:on-?site|office|wfo|in[- ]office|work\s+from\s+office)\b|"
+    r"\bwork(?:ing)?\s+from\s+(?:the\s+|our\s+)?office\b|\bwfo\b|"
+    r"\b(?:on-?site|in[- ]office)\s+(?:role|position|only|job|presence|work\w*|opportunity)\b|"
+    r"[(\[]\s*(?:on-?site|in[- ]office|wfo)\s*[)\]]|"
+    r"\b5" + _DAYS_IN_OFFICE,
+    re.I,
+)
+_REMOTE_MODE_RE = re.compile(
+    _WORK_MODE_FIELD + r"(?:remote|wfh|work\s+from\s+home)\b|"
+    r"\b(?:fully|100\s*%|completely|permanent(?:ly)?)\s+remote\b|"
+    r"\bremote\s+(?:role|position|job|opportunity|work\b|working|first|only)|"
+    r"\bwork(?:ing)?\s+from\s+(?:home|anywhere)\b|\bwfh\b|[(\[]\s*remote\s*[)\]]",
+    re.I,
+)
+# In a job title or location the bare word is a statement: "Python Developer (Remote)", "Hyderabad - Hybrid".
+_TITLE_WORK_MODES: List[Tuple[str, "re.Pattern[str]"]] = [
+    ("Hybrid", re.compile(r"\bhybrid\b", re.I)),
+    ("Remote", re.compile(r"\bremote\b|\bwfh\b|\bwork\s+from\s+home\b", re.I)),
+    ("On-site", re.compile(r"\bon-?site\b|\bin[- ]office\b|\bwfo\b", re.I)),
+]
+
+
+def work_mode_label(job: Dict[str, Any]) -> str:
+    """Remote, Hybrid or On-site as the posting says it; WORK_MODE_UNKNOWN when it does not say."""
+    heading = f"{job.get('title') or ''}\n{job.get('location') or ''}"
+    for name, pattern in _TITLE_WORK_MODES:
+        if pattern.search(heading):
+            return name
+    description = str(job.get("description") or "")
+    hybrid = bool(_HYBRID_MODE_RE.search(description))
+    onsite = bool(_ONSITE_MODE_RE.search(description))
+    remote = bool(_REMOTE_MODE_RE.search(description))
+    if hybrid or (onsite and remote):
+        return "Hybrid"
+    if remote:
+        return "Remote"
+    if onsite:
+        return "On-site"
+    # A work mode supplied with the record (a hand-made data/linkedin_jobs.json entry).
+    given = str(job.get("workplace_type") or "").lower()
+    for name, words in (("Hybrid", ("hybrid",)), ("Remote", ("remote",)), ("On-site", ("on-site", "onsite", "office"))):
+        if any(word in given for word in words):
+            return name
+    return WORK_MODE_UNKNOWN
+
+
+def is_hyderabad_job(job: Dict[str, Any]) -> bool:
+    location = str(job.get("location") or "").lower()
+    return any(re.search(rf"\b{name}\b", location) for name in HYDERABAD_NAMES)
+
+
+def experience_is_stated(job: Dict[str, Any]) -> bool:
+    """The posting gives a figure for years of experience (in its title, description or experience field)."""
+    _extract_experience_range(job)
+    return _as_float(job.get("min_experience_years")) is not None or _as_float(job.get("max_experience_years")) is not None
+
+
+def fast_alert_class(job: Dict[str, Any], candidate_yoe: float = 2.0, min_match: int = FAST_ALERT_MIN_MATCH) -> str:
+    """'alert', 'no_yoe' or '' for one job whose description has been read.
+
+    alert  : Hyderabad, full-time, passes every filter of the hourly report, scores min_match or more,
+             and states experience that includes candidate_yoe.
+    no_yoe : the same, except that the posting states no experience at all.
+    """
+    if not is_hyderabad_job(job) or rejection_reason(job, candidate_yoe=candidate_yoe):
+        return ""
+    score_job(job)
+    if int(job.get("skill_match_pct", 0)) < min_match:
+        return ""
+    return "alert" if experience_is_stated(job) else "no_yoe"
+
+
+def load_fast_state() -> Dict[str, Any]:
+    """State of the Hyderabad watcher.
+
+    decided : {job id: when} - postings already read and judged; they are not fetched again
+    alerted : {job id or "k:" + fingerprint: when} - openings already sent in an alert
+    queue   : openings that qualify for an alert and have not been delivered yet
+    held    : openings that qualify except for stating no experience, waiting for the next alert
+    """
+    state: Dict[str, Any] = {"decided": {}, "alerted": {}, "queue": [], "held": []}
+    try:
+        payload = json.loads(FAST_STATE_FILE.read_text(encoding="utf-8"))
+        for key, kind in (("decided", dict), ("alerted", dict), ("queue", list), ("held", list)):
+            if isinstance(payload.get(key), kind):
+                state[key] = payload[key]
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, AttributeError) as exc:
+        LOG.warning("Could not read the Hyderabad alert state; starting empty: %s", exc)
+    return state
+
+
+def save_fast_state(state: Dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+
+    def newer_than(stamps: Dict[str, str], days: float) -> Dict[str, str]:
+        cutoff = (now - timedelta(days=days)).isoformat()
+        return {key: stamp for key, stamp in stamps.items() if str(stamp) >= cutoff}
+
+    # A posting is only ever seen while it is inside the search window, so judgements need not be kept long.
+    state["decided"] = newer_than(state["decided"], 3)
+    state["alerted"] = newer_than(state["alerted"], 45)
+    FAST_STATE_FILE.write_text(json.dumps({**state, "updated_at": now.isoformat()}, ensure_ascii=False), encoding="utf-8")
+
+
+_FAST_RECORD_FIELDS = (
+    "job_id", "source", "title", "company", "location", "also_in", "duplicate_ids", "posting_key", "workplace_type",
+    "is_easy_apply", "skill_match_pct", "matched_skills", "missing_skills", "min_experience_years",
+    "max_experience_years", "experience_requirement", "job_url", "apply_url", "posted_at",
+)
+
+
+def _fast_record(job: Dict[str, Any]) -> Dict[str, Any]:
+    """The part of a job that an alert needs, small enough to keep in the state file."""
+    record = dict(job)
+    record["workplace_type"] = work_mode_label(job)
+    age = _as_float(job.get("age_hours")) or 0.0
+    record["posted_at"] = (datetime.now(timezone.utc) - timedelta(hours=age)).isoformat()
+    record["job_url"] = record["apply_url"] = clean_job_url(job)
+    return {key: record[key] for key in _FAST_RECORD_FIELDS if key in record}
+
+
+def _hours_since_posted(record: Dict[str, Any]) -> float | None:
+    posted = _parse_linkedin_timestamp(record.get("posted_at"))
+    if posted is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - posted).total_seconds() / 3600.0)
+
+
+def _with_current_age(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy of a stored record whose 'Posted' text is worked out as of now."""
+    out = dict(record)
+    age = _hours_since_posted(record)
+    if age is not None:
+        out["age_hours"] = round(age, 3)
+        out["freshness_badge"] = f"<1h ago ({max(1, round(age * 60))}m)" if age < 1 else f"{age:.1f}h ago"
+    return out
+
+
+def _alert_ids(record: Dict[str, Any]) -> List[str]:
+    """Everything that identifies an opening: its id, the ids of its copies, and its fingerprint."""
+    ids = [str(record.get("job_id")), *[str(x) for x in record.get("duplicate_ids") or []]]
+    if record.get("posting_key"):
+        ids.append(SEEN_KEY_PREFIX + str(record["posting_key"]))
+    return ids
+
+
+def fast_alert_name(alerts: Sequence[Dict[str, Any]]) -> str:
+    """Name of the alert, used as the mail subject: "Hyderabad (Hybrid) jobs apply fast"."""
+    modes: List[str] = []
+    for record in alerts:
+        mode = str(record.get("workplace_type") or WORK_MODE_UNKNOWN)
+        if mode not in modes:
+            modes.append(mode)
+    modes.sort(key=lambda mode: mode == WORK_MODE_UNKNOWN)
+    return f"Hyderabad ({', '.join(modes) or WORK_MODE_UNKNOWN}) jobs apply fast"
+
+
+def _fast_alert_rule(candidate_yoe: float, min_match: int) -> str:
+    return (
+        f"in Hyderabad (any work mode), full-time, a skill match of {min_match}% or more, "
+        f"and asking for experience that includes your {candidate_yoe:g} years"
+    )
+
+
+def build_fast_alert_email_html(
+    name: str,
+    alerts: Sequence[Dict[str, Any]],
+    held: Sequence[Dict[str, Any]],
+    candidate_yoe: float,
+    min_match: int,
+) -> str:
+    run_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
+    held_table = html_table(held) if held else '<p style="color:#666;margin:8px 0 18px">None found since the last alert.</p>'
+    return f"""<!doctype html><html><body style="font-family:Arial,sans-serif;color:#202124">
+    <h2>{html.escape(name)}</h2>
+    <p>Run time: <b>{run_time}</b></p>
+    <p>Every job in table 1 is {html.escape(_fast_alert_rule(candidate_yoe, min_match))}.</p>
+    <h3>1. Apply now ({len(alerts)})</h3>
+    {html_table(alerts)}
+    <h3 style="margin-top:28px">2. Also qualified, but the posting states no experience ({len(held)})</h3>
+    <p>These meet the same rules (Hyderabad, full-time, {min_match}% or more), but the posting gives no years of
+    experience. Such a job never starts an alert by itself; it is listed here with the next alert, if one goes
+    out within {FAST_HELD_HOURS:g} hours of its posting.</p>
+    {held_table}
+    <p>{SCORE_EXPLANATION}</p>
+    <p style="font-size:11px;color:#666;margin-top:22px">Automated alert from the Hyderabad scan, which runs every few minutes.
+    The hourly report still lists these jobs with all the others. Verify the requirements on the employer's application page.</p>
+    </body></html>"""
+
+
+def build_fast_alert_issue_body(
+    name: str,
+    alerts: Sequence[Dict[str, Any]],
+    held: Sequence[Dict[str, Any]],
+    candidate_yoe: float,
+    min_match: int,
+) -> str:
+    run_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
+    owner = issue_owner()
+    mention = f"cc @{owner}\n\n" if owner else ""
+    return (
+        f"# {name}\n\n{mention}**Run time:** {run_time}  \n"
+        f"**Rule:** every job in table 1 is {_fast_alert_rule(candidate_yoe, min_match)}.\n\n"
+        f"## 1. Apply now ({len(alerts)})\n\n{markdown_table(alerts)}\n\n"
+        f"## 2. Also qualified, but the posting states no experience ({len(held)})\n\n"
+        f"Same rules, but the posting gives no years of experience, so these never start an alert by themselves.\n\n"
+        f"{markdown_table(held) if held else '_None found since the last alert._'}\n\n"
+        f"---\n{SCORE_EXPLANATION}\n"
+    )
+
+
+def _alert_order(record: Dict[str, Any]) -> Tuple[int, int, float]:
+    return (-int(record.get("skill_match_pct", 0)), 0 if record.get("is_easy_apply") else 1, float(record.get("age_hours", 0) or 0))
+
+
+def send_fast_alert(
+    alerts: Sequence[Dict[str, Any]],
+    held: Sequence[Dict[str, Any]],
+    candidate_yoe: float,
+    min_match: int,
+    dry_run: bool = False,
+) -> Dict[str, bool]:
+    """Push, mail and issue for one alert. 'delivered' is True when at least one of them went out."""
+    alerts = sorted((_with_current_age(r) for r in alerts), key=_alert_order)
+    held = sorted((_with_current_age(r) for r in held), key=_alert_order)
+    name = fast_alert_name(alerts)
+    mail_body = build_fast_alert_email_html(name, alerts, held, candidate_yoe, min_match)
+    issue_body = build_fast_alert_issue_body(name, alerts, held, candidate_yoe, min_match)
+    if dry_run:
+        REPORT_DIR.mkdir(parents=True, exist_ok=True)
+        (REPORT_DIR / "hyderabad_alert_preview.html").write_text(mail_body, encoding="utf-8")
+        (REPORT_DIR / "hyderabad_alert_preview.md").write_text(issue_body, encoding="utf-8")
+        LOG.info("Dry run: alert %r not sent; preview written to %s", name, REPORT_DIR)
+        return {"delivered": True, "mailed": True}
+
+    top = alerts[0]
+    more = f" (+{len(alerts) - 1} more)" if len(alerts) > 1 else ""
+    no_years = f" Also {len(held)} without stated experience." if held else ""
+    message = (
+        f"{top.get('title')} at {top.get('company')}{more}: {int(top.get('skill_match_pct', 0))}% match, "
+        f"{experience_label(top)}, {top.get('workplace_type')}"
+        f"{', Easy Apply' if top.get('is_easy_apply') else ''}, posted {top.get('freshness_badge', 'just now')}.{no_years}"
+    )
+    # The push goes first: it is the quickest way to reach the phone, and it opens the job itself.
+    pushed = send_push_notification(name, message, click_url=str(top.get("job_url") or ""), priority="urgent")
+    mailed = send_gmail(name, mail_body)
+    run_stamp = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %I:%M %p IST")
+    issue_url = create_github_issue(f"{name} | {run_stamp}", issue_body)
+    return {"delivered": bool(pushed or mailed or issue_url), "mailed": bool(mailed)}
+
+
+def fast_alert_pass(state: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    """One scan of Hyderabad: judge the postings not judged before and send an alert if one qualifies."""
+    RUN_NOTES.clear()
+    SEARCH_STATS.update(pages=0, failed=0)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    jobs = collect_jobs(
+        hours=args.hours, target_count=0, delay=args.delay, source=args.source, proxy=args.proxy,
+        keywords=args.keywords, location=FAST_ALERT_LOCATION,
+        skip_ids=set(state["decided"]),
+        # One empty page ends a search: this scan repeats every few minutes, so it keeps its request count low.
+        search_options={"empty_pages_to_stop": 1, "budget_seconds": FAST_SEARCH_BUDGET_SECONDS},
+    )
+    candidates = []
+    waiting = 0
+    for job in jobs:
+        if is_hyderabad_job(job) and title_is_eligible(job) and not str(job.get("description") or "").strip():
+            waiting += 1  # LinkedIn did not return the description; the next pass asks again
+            continue
+        state["decided"][str(job["job_id"])] = now_iso
+        kind = fast_alert_class(job, candidate_yoe=args.candidate_yoe, min_match=args.fast_min_match)
+        if kind:
+            job["fast_class"] = kind
+            candidates.append(job)
+
+    known = set(state["alerted"]) | {x for record in state["queue"] + state["held"] for x in _alert_ids(record)}
+    new_alerts = new_held = 0
+    for job in merge_duplicate_postings(candidates):
+        record = _fast_record(job)
+        ids = _alert_ids(record)
+        if any(x in known for x in ids):
+            continue  # already sent, or the same opening re-posted under a new id
+        known.update(ids)
+        if job["fast_class"] == "alert":
+            state["queue"].append(record)
+            new_alerts += 1
+        else:
+            state["held"].append(record)
+            new_held += 1
+    state["held"] = [r for r in state["held"] if (_hours_since_posted(r) or 0.0) <= FAST_HELD_HOURS]
+
+    result: Dict[str, Any] = {
+        "scanned": len(jobs), "waiting": waiting, "new_alerts": new_alerts, "new_held": new_held,
+        "sent": False, "mail_failed": False,
+    }
+    if state["queue"]:
+        outcome = send_fast_alert(state["queue"], state["held"], args.candidate_yoe, args.fast_min_match, dry_run=args.dry_run)
+        result["mail_failed"] = not outcome["mailed"]
+        if outcome["delivered"]:
+            result["sent"] = True
+            for record in state["queue"] + state["held"]:
+                for x in _alert_ids(record):
+                    state["alerted"][x] = now_iso
+            state["queue"], state["held"] = [], []
+        else:
+            LOG.error("The alert could not be delivered by push, mail or issue; it stays queued for the next pass.")
+    LOG.info(
+        "Hyderabad pass: %d unjudged posting(s) read, %d still without a description, %d new alert(s), "
+        "%d held for stating no experience (%d waiting in all), alert sent: %s.",
+        len(jobs), waiting, new_alerts, new_held, len(state["held"]), "yes" if result["sent"] else "no",
+    )
+    return result
+
+
+def run_fast_alert(args: argparse.Namespace) -> int:
+    """Scan Hyderabad now and then every --interval-minutes until --watch-minutes have passed (0 = one scan)."""
+    state = load_fast_state()
+    interval = max(60.0, float(args.interval_minutes) * 60.0)
+    stop_at = time.monotonic() + max(0.0, float(args.watch_minutes)) * 60.0
+    passes = crashed = 0
+    mail_failed = False
+    while True:
+        started = time.monotonic()
+        passes += 1
+        try:
+            mail_failed = fast_alert_pass(state, args)["mail_failed"] or mail_failed
+        except Exception:
+            # One bad pass must not stop the watcher, and must not send a failure mail every few minutes.
+            crashed += 1
+            LOG.exception("Hyderabad pass %d failed; carrying on.", passes)
+        if not args.dry_run:
+            save_fast_state(state)
+        if started + interval > stop_at:
+            break
+        if SEARCH_STATS["failed"] >= 3 or (SEARCH_STATS["failed"] and SEARCH_STATS["failed"] == SEARCH_STATS["pages"]):
+            LOG.warning("LinkedIn is refusing this runner's searches; stopping early so the next run starts from a new address.")
+            break
+        time.sleep(max(0.0, started + interval - time.monotonic()))
+    LOG.info("Hyderabad watcher finished: %d pass(es), %d failed.", passes, crashed)
+    if crashed == passes:
+        return 1
+    return _exit_code(not mail_failed)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scheduled LinkedIn job scraping, skills matching, and GitHub notifications")
     parser.add_argument("--hours", type=float, default=1.0, help="Only consider jobs posted within this many hours (e.g., 1 for 1 hour ago, 24 for 24h)")
@@ -2769,7 +3171,19 @@ def main() -> int:
     parser.add_argument("--output", type=str, default="shards/jobs.json", help="File written by --collect-only")
     parser.add_argument("--from-shards", type=str, default=None,
                         help="Report mode: read the search workers' files from this folder instead of searching")
+    parser.add_argument("--fast-alert", action="store_true",
+                        help="Hyderabad watcher: scan Hyderabad only and notify at once about new openings that are full-time, "
+                             "score --fast-min-match or more and state experience that includes --candidate-yoe")
+    parser.add_argument("--fast-min-match", type=int, default=FAST_ALERT_MIN_MATCH, help="Skill match needed for a Hyderabad alert (default 80)")
+    parser.add_argument("--watch-minutes", type=float, default=0.0,
+                        help="With --fast-alert: keep scanning for this many minutes (0 = scan once)")
+    parser.add_argument("--interval-minutes", type=float, default=5.0, help="With --fast-alert: minutes from one scan to the next")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="With --fast-alert: send nothing and keep no state; write the alert to reports/ instead")
     args = parser.parse_args()
+
+    if args.fast_alert:
+        return run_fast_alert(args)
 
     collect_args = dict(
         hours=args.hours,

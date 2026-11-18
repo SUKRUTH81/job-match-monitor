@@ -1,0 +1,148 @@
+name: Hyderabad Fast Alert
+
+# Watches LinkedIn for new Hyderabad openings and notifies within minutes of posting.
+# It runs beside the hourly "Job Match Monitor" and does not replace it.
+#
+# An alert (phone push, mail named "Hyderabad (<work mode>) jobs apply fast", GitHub Issue) goes out
+# when a new opening is all of:
+#   - in Hyderabad, whatever the work mode (on-site, hybrid, remote),
+#   - full-time,
+#   - a skill match of 80% or more,
+#   - asking for experience that includes the candidate's years. A posting that states no
+#     experience never starts an alert; if it meets the other rules it is listed in a second
+#     table of the next alert.
+#
+# How it keeps running: each run scans Hyderabad every INTERVAL_MINUTES for WATCH_MINUTES and then
+# starts the next run, so there is always one run in progress. timer-watchdog.yml restarts the
+# chain if it ever stops. Every run is a new runner, so LinkedIn sees a new address every half hour.
+#
+# To start it by hand: Actions -> Hyderabad Fast Alert -> Run workflow.
+# To stop it: Actions -> Hyderabad Fast Alert -> "..." -> Disable workflow (the watchdog leaves a
+# disabled workflow alone). Enable it and run it once to start again.
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_yoe:
+        description: 'Candidate years of experience (default 2.0)'
+        required: false
+        default: '2.0'
+      min_match:
+        description: 'Skill match needed for an alert, in percent (default 80)'
+        required: false
+        default: '80'
+      watch_minutes:
+        description: 'Minutes this run keeps scanning (0 = scan once). Later runs go back to 25.'
+        required: false
+        default: '25'
+      keep_running:
+        description: 'Start the next run when this one ends'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
+
+# One watcher at a time. A run started while another is in progress waits for it to end.
+concurrency:
+  group: hyderabad-fast-alert
+  cancel-in-progress: false
+
+env:
+  WATCH_MINUTES: ${{ inputs.watch_minutes || '25' }}
+  INTERVAL_MINUTES: '5'
+  STATE_FILE: data/hyderabad_alert_state.json
+
+jobs:
+  watch:
+    name: Watch Hyderabad
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # What was already judged and already sent, handed from run to run.
+      - name: Restore alert history
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.STATE_FILE }}
+          key: hyderabad-alert-v1-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            hyderabad-alert-v1-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Scan Hyderabad every few minutes and alert
+        # A scan that hangs is stopped here, as a failed step, so the two steps below still run.
+        timeout-minutes: 42
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_OWNER: ${{ github.repository_owner }}
+          LINKEDIN_PROXY: ${{ secrets.LINKEDIN_PROXY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          JOB_ALERT_TO: ${{ secrets.JOB_ALERT_TO || 'sukruth1435@gmail.com, akhilarohithayepuri@gmail.com' }}
+          INPUT_CANDIDATE_YOE: ${{ inputs.candidate_yoe || '2.0' }}
+          INPUT_MIN_MATCH: ${{ inputs.min_match || '80' }}
+        run: |
+          python job_match_runner.py --fast-alert --source guest --hours 1 \
+            --candidate-yoe "$INPUT_CANDIDATE_YOE" --fast-min-match "$INPUT_MIN_MATCH" \
+            --watch-minutes "$WATCH_MINUTES" --interval-minutes "$INTERVAL_MINUTES"
+
+      - name: Save alert history
+        # Also after a failed or cancelled scan, so an alert that went out is never sent twice.
+        if: always() && hashFiles('data/hyderabad_alert_state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.STATE_FILE }}
+          key: hyderabad-alert-v1-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Start the next run
+        # Runs even if the scan failed, so the chain never breaks. The next run waits in the
+        # concurrency group until this one has ended.
+        if: always() && inputs.keep_running != false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          THIS_WORKFLOW: hyderabad-fast-alert.yml
+          INPUT_CANDIDATE_YOE: ${{ inputs.candidate_yoe || '2.0' }}
+          INPUT_MIN_MATCH: ${{ inputs.min_match || '80' }}
+        run: |
+          newer() {
+            gh api "repos/$REPO/actions/workflows/$THIS_WORKFLOW/runs?per_page=30" \
+              --jq "[.workflow_runs[] | select(.id > $RUN_ID and .status != \"completed\")] | length" || echo 0
+          }
+          for attempt in 1 2 3 4 5; do
+            # Someone may have started a run by hand meanwhile; one successor is enough.
+            if [ "$(newer)" -gt 0 ]; then
+              echo "The next run is waiting."
+              exit 0
+            fi
+            gh workflow run "$THIS_WORKFLOW" --repo "$REPO" --ref "$REF" \
+              -f candidate_yoe="$INPUT_CANDIDATE_YOE" -f min_match="$INPUT_MIN_MATCH" || true
+            for check in 1 2 3 4 5 6; do
+              sleep 5
+              if [ "$(newer)" -gt 0 ]; then
+                echo "The next run is waiting."
+                exit 0
+              fi
+            done
+            echo "Attempt $attempt: next run not visible yet; starting it again."
+          done
+          echo "::error::Could not start the next run. The watchdog will restart the chain."
+          exit 1

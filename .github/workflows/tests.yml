@@ -41,3 +41,6 @@ jobs:
 
       - name: Report, email and failure paths
         run: python tests/test_pipeline.py
+
+      - name: Hyderabad fast alert
+        run: python tests/test_fast_alert.py

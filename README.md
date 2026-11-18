@@ -8,7 +8,33 @@ Every hour this searches LinkedIn for jobs posted in the last hour, keeps the on
 2. **Search workers.** Five parallel jobs search LinkedIn (Hyderabad, Bengaluru, Chennai, and two for India-remote) and read the description of every job whose title and location could fit.
 3. **Report.** One job merges the workers' results, applies the filters, scores, removes duplicates and already-reported openings, and sends the email, issue and push.
 
-The filters are tested offline by `tests/` (run `python tests/test_experience.py`, `python tests/test_role_fit.py`, `python tests/test_pipeline.py`); the Tests workflow runs them on every change.
+The filters are tested offline by `tests/` (run `python tests/test_experience.py`, `python tests/test_role_fit.py`, `python tests/test_pipeline.py`, `python tests/test_fast_alert.py`); the Tests workflow runs them on every change.
+
+## Hyderabad fast alert
+
+Beside the hourly report, `hyderabad-fast-alert.yml` scans Hyderabad **every 5 minutes** and notifies at once, so a good opening is seen minutes after it is posted instead of up to an hour later.
+
+An alert goes out when a new opening is all of:
+
+- in **Hyderabad**, whatever the work mode (on-site, hybrid or remote);
+- **full-time**;
+- a skill match of **80% or more**;
+- asking for experience that **includes your years** (2 by default: 0-2, 1-3, 2-4, 2+ ...). A posting that states no experience never starts an alert.
+
+It must also pass every filter of the hourly report (target title, Python developer role).
+
+What you get: a phone push (ntfy, urgent priority, opens the job), a mail named **`Hyderabad (<work mode>) jobs apply fast`** to the same recipients as the hourly mail, and a GitHub Issue. The mail and the issue hold two tables:
+
+1. **Apply now** - the openings that met every rule above.
+2. **Also qualified, but the posting states no experience** - Hyderabad, full-time, 80%+, with no years stated. These never start an alert by themselves; they are listed with the next alert, if one goes out within 24 hours of their posting.
+
+The work mode in the mail name and in the tables is read from the posting's own words ("Work mode: Hybrid", "work from office", "(Remote)" in the title). LinkedIn's public pages have no work-mode field, so when the posting does not say, the alert says `work mode not stated`.
+
+An opening is alerted once: the watcher remembers what it sent (also when the same opening is re-posted under a new LinkedIn id). The hourly report is unchanged and still lists these jobs with all the others.
+
+**How it keeps running.** Each run scans for 25 minutes (6 scans) and then starts the next run, so one "Hyderabad Fast Alert" run is always in progress, each on a fresh runner. `timer-watchdog.yml` restarts it if it ever stops. To stop the alerts, disable the **Hyderabad Fast Alert** workflow on the Actions tab; to start them again, enable it and run it once. `INTERVAL_MINUTES` in the workflow and the `watch_minutes` input set the pace; the `min_match` and `candidate_yoe` inputs set the rule.
+
+To see what an alert would look like without sending anything: `python job_match_runner.py --fast-alert --source guest --dry-run` (writes `reports/hyderabad_alert_preview.html`).
 
 ## Notification behavior
 
