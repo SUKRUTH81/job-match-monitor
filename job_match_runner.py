@@ -2785,7 +2785,7 @@ def create_excel(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[s
 
 FAST_ALERT_LOCATION = "Hyderabad"
 HYDERABAD_NAMES = ("hyderabad", "secunderabad")
-FAST_ALERT_MIN_MATCH = 80
+FAST_ALERT_MIN_MATCH = 70
 FAST_STATE_FILE = DATA_DIR / "hyderabad_alert_state.json"
 # A held-back opening (no experience stated) is dropped when no alert goes out within this many hours of its posting.
 FAST_HELD_HOURS = 24.0
