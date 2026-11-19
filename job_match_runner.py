@@ -3174,7 +3174,7 @@ def main() -> int:
     parser.add_argument("--fast-alert", action="store_true",
                         help="Hyderabad watcher: scan Hyderabad only and notify at once about new openings that are full-time, "
                              "score --fast-min-match or more and state experience that includes --candidate-yoe")
-    parser.add_argument("--fast-min-match", type=int, default=FAST_ALERT_MIN_MATCH, help="Skill match needed for a Hyderabad alert (default 80)")
+    parser.add_argument("--fast-min-match", type=int, default=FAST_ALERT_MIN_MATCH, help="Skill match needed for a Hyderabad alert (default 70)")
     parser.add_argument("--watch-minutes", type=float, default=0.0,
                         help="With --fast-alert: keep scanning for this many minutes (0 = scan once)")
     parser.add_argument("--interval-minutes", type=float, default=5.0, help="With --fast-alert: minutes from one scan to the next")
