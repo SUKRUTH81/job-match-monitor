@@ -2521,8 +2521,11 @@ def create_github_issue(title: str, body: str) -> str:
 
 
 def send_push_notification(title: str, message: str, click_url: str = "", priority: str = "high") -> bool:
-    """Send real-time mobile/desktop push notification via ntfy.sh (zero-config, free, instant lock-screen alert)."""
-    topic = os.environ.get("NTFY_TOPIC", "sukruth_job_alerts").strip() or "sukruth_job_alerts"
+    """Send a phone push through ntfy.sh. The topic is the NTFY_TOPIC secret; without it no push is sent."""
+    topic = os.environ.get("NTFY_TOPIC", "").strip()
+    if not topic:
+        LOG.warning("NTFY_TOPIC secret not set: phone push skipped.")
+        return False
     endpoint = f"https://ntfy.sh/{topic}"
     headers = {
         "Title": title[:200],
@@ -2536,21 +2539,18 @@ def send_push_notification(title: str, message: str, click_url: str = "", priori
         if requests is not None:
             r = requests.post(endpoint, data=message.encode("utf-8"), headers=headers, timeout=10)
             if r.status_code == 200:
-                LOG.info("Push notification successfully sent to ntfy.sh/%s", topic)
+                LOG.info("Push notification sent through ntfy.sh.")
                 return True
         else:
             import urllib.request
             req = urllib.request.Request(endpoint, data=message.encode("utf-8"), headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status == 200:
-                    LOG.info("Push notification successfully sent to ntfy.sh/%s", topic)
+                    LOG.info("Push notification sent through ntfy.sh.")
                     return True
     except Exception as exc:
         LOG.warning("Failed to send push notification to ntfy.sh: %s", exc)
     return False
-
-
-DEFAULT_RECIPIENTS = ["sukruth1435@gmail.com", "akhilarohithayepuri@gmail.com"]
 
 
 def unchecked_jobs_html(unchecked: Sequence[Dict[str, Any]]) -> str:
@@ -2726,19 +2726,21 @@ def send_gmail(subject: str, html_body: str, attachment: Path | None = None) -> 
     """Send the mail. Returns False only when delivery was attempted and failed after three tries."""
     sender = os.environ.get("GMAIL_ADDRESS", "").strip()
     app_password = os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
-    recipients_raw = os.environ.get("JOB_ALERT_TO", "").strip()
-    if recipients_raw:
-        recipients = [r.strip() for r in re.split(r"[,;]+", recipients_raw) if r.strip()]
-    else:
-        recipients = DEFAULT_RECIPIENTS
+    # Who gets the mail is the JOB_ALERT_TO secret; no address is kept in this file.
+    recipients = [r.strip() for r in re.split(r"[,;]+", os.environ.get("JOB_ALERT_TO", "")) if r.strip()]
 
     if not sender or not app_password:
         LOG.warning(
             "GMAIL_ADDRESS or GMAIL_APP_PASSWORD secret not set in GitHub repository. "
-            "Direct email delivery to %s skipped. Add these secrets in Settings -> Secrets and variables -> Actions.",
-            ", ".join(recipients),
+            "Email delivery skipped. Add these secrets in Settings -> Secrets and variables -> Actions."
         )
         return True
+    if not recipients:
+        LOG.error(
+            "JOB_ALERT_TO secret not set, so there is nobody to mail. Add it in Settings -> Secrets and variables -> Actions "
+            "(the addresses, separated by commas)."
+        )
+        return False
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -2765,10 +2767,13 @@ def send_gmail(subject: str, html_body: str, attachment: Path | None = None) -> 
                 server.ehlo()
                 server.login(sender, app_password)
                 server.send_message(msg)
-            LOG.info("Gmail report successfully sent to: %s", ", ".join(recipients))
+            LOG.info("Gmail report successfully sent to %d recipient(s).", len(recipients))
             return True
         except Exception as exc:
-            LOG.error("Failed to send email to %s (attempt %d of %d): %s", ", ".join(recipients), attempt, attempts, exc)
+            problem = str(exc)
+            for address in recipients:  # the log is public; keep the addresses out of it
+                problem = problem.replace(address, "<recipient>")
+            LOG.error("Failed to send email (attempt %d of %d): %s", attempt, attempts, problem)
             if attempt < attempts:
                 time.sleep(10 * attempt)
     return False
@@ -3335,7 +3340,7 @@ def main() -> int:
         push_msg = f"{len(matched)} match(es) >={args.min_match}%! Top: {top_job.get('title')} at {top_job.get('company')} ({int(top_job.get('skill_match_pct', 0))}%) in {top_job.get('location')}{easy_tag}"
         send_push_notification(title, push_msg, click_url=issue_url or top_job.get("job_url", ""), priority="high")
 
-    # Send email notification (to akhilarohithayepuri@gmail.com) with attached Excel report
+    # Send email notification with attached Excel report
     unchecked = [j for j in collected if reasons.get(id(j)) == DESCRIPTION_UNAVAILABLE]
     reason_counts: Dict[str, int] = {}
     for reason in reasons.values():

@@ -203,6 +203,7 @@ check("search page: link goes to the card's own job", scraped and scraped[0]["jo
 
 # --- 3. main(): which notifications fire ---------------------------------------------------------
 real_send_gmail = m.send_gmail
+real_send_push = m.send_push_notification
 
 
 def run_main(collected, crash=False, mail_ok=True, seen=(), extra_args=()):
@@ -324,10 +325,51 @@ check("send_gmail: both recipients addressed", FakeSMTP.sent and FakeSMTP.sent[0
 FakeSMTP.fail, FakeSMTP.attempts = True, 0
 ok = m.send_gmail("subject", "<p>body</p>")
 check("send_gmail: SMTP keeps failing -> False after 3 attempts", ok is False and FakeSMTP.attempts == 3, f"{ok} {FakeSMTP.attempts}")
+kept_recipients = os.environ.pop("JOB_ALERT_TO")
+FakeSMTP.fail, FakeSMTP.attempts = False, 0
+ok = m.send_gmail("subject", "<p>body</p>")
+check("send_gmail: no JOB_ALERT_TO secret -> a failure, and no built-in address is mailed", ok is False and FakeSMTP.attempts == 0, f"{ok} {FakeSMTP.attempts}")
+os.environ["JOB_ALERT_TO"] = kept_recipients
 os.environ.pop("GMAIL_APP_PASSWORD")
 FakeSMTP.attempts = 0
 ok = m.send_gmail("subject", "<p>body</p>")
 check("send_gmail: secrets missing -> skipped, not a failure", ok is True and FakeSMTP.attempts == 0, f"{ok} {FakeSMTP.attempts}")
+
+
+# --- the addresses and the push topic live in secrets, not in the repository ----------------------------
+class FakePost:
+    calls = []
+    status_code = 200
+
+
+def fake_post(url, **kwargs):
+    FakePost.calls.append(url)
+    return FakePost()
+
+
+real_post = m.requests.post
+m.requests.post = fake_post
+os.environ.pop("NTFY_TOPIC", None)
+check("push: no NTFY_TOPIC secret -> nothing is sent, there is no built-in topic", real_send_push("t", "m") is False and FakePost.calls == [], str(FakePost.calls))
+os.environ["NTFY_TOPIC"] = "a-private-topic"
+check("push: goes to the topic in the secret", real_send_push("t", "m") is True and FakePost.calls == ["https://ntfy.sh/a-private-topic"], str(FakePost.calls))
+os.environ.pop("NTFY_TOPIC")
+m.requests.post = real_post
+
+import re  # noqa: E402
+
+kept_files = [f for pattern in ("*.py", "*.md", "*.txt", ".github/workflows/*.yml", "tests/*.py") for f in Path(repo_dir).glob(pattern)]
+leaks = []
+for f in kept_files:
+    text = f.read_text(encoding="utf-8", errors="replace")
+    for found in re.findall(r"[A-Za-z0-9._%+-]+@(?:gmail|googlemail|outlook|hotmail|yahoo|icloud|proton|protonmail)\.[a-z.]{2,}", text, re.I):
+        if found.lower() != "yourname@gmail.com":
+            leaks.append(f"{f.name}: a personal mail address")
+    if re.search(r"ntfy\.sh/[A-Za-z0-9_]", text) and f.name != "test_pipeline.py":
+        leaks.append(f"{f.name}: a push topic")
+    if re.search(r"secrets\.JOB_ALERT_TO\s*\|\|", text) and f.name != "test_pipeline.py":
+        leaks.append(f"{f.name}: a fallback address list")
+check("no mail address or push topic is written in the repository files", len(kept_files) > 10 and not leaks, str(leaks[:6]))
 
 print()
 print("ALL PASS" if not failures else f"{len(failures)} FAILED: {failures}")

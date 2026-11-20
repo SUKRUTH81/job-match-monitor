@@ -38,7 +38,7 @@ To see what an alert would look like without sending anything: `python job_match
 
 ## Notification behavior
 
-- **Every run sends one email** through Gmail SMTP (secrets `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, optional `JOB_ALERT_TO`): the match report, a "nothing new" mail, a "no eligible jobs" mail, or a failure mail.
+- **Every run sends one email** through Gmail SMTP (secrets `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `JOB_ALERT_TO`): the match report, a "nothing new" mail, a "no eligible jobs" mail, or a failure mail.
 - A new GitHub Issue is created only when at least one newly discovered job scores at or above 60%.
 - The issue is assigned to the repository owner, which triggers a GitHub assignment notification. Check GitHub notification settings and watch the repository for Issues.
 - Issue table 1: new jobs scoring 60%+, sorted by match percentage descending.
@@ -71,16 +71,16 @@ GitHub's `schedule` cron is best-effort and was skipping most hourly slots, so t
 
 To start the chain by hand, run the **Timer Watchdog** workflow from the Actions tab. To stop the hourly runs, cancel the waiting **Hourly Timer** run and disable the **Timer Watchdog** workflow. To change the minute, edit `TARGET_MINUTE` in `hourly-timer.yml`.
 
-Each run scans jobs posted within the **last 1 hour** (`--hours 1`), deduplicates against previously seen job IDs, creates a GitHub Issue when matches reach 60%+, and optionally emails the HTML report with the attached Excel workbook to **`sukruth1435@gmail.com`** and **`akhilarohithayepuri@gmail.com`**.
+Each run scans jobs posted within the **last 1 hour** (`--hours 1`), deduplicates against previously seen job IDs, creates a GitHub Issue when matches reach 60%+, and optionally emails the HTML report with the attached Excel workbook to the addresses in the `JOB_ALERT_TO` secret.
 
 ## Email notifications (Gmail)
 
-To enable email delivery to `sukruth1435@gmail.com` and `akhilarohithayepuri@gmail.com`:
+To enable email delivery:
 1. In your GitHub repository, go to **Settings → Secrets and variables → Actions → New repository secret**.
 2. Add:
    - `GMAIL_ADDRESS`: your Gmail address (e.g. `yourname@gmail.com`).
    - `GMAIL_APP_PASSWORD`: a 16-character Google App Password (generated at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)).
-   - *(Optional)* `JOB_ALERT_TO`: Defaults to `sukruth1435@gmail.com, akhilarohithayepuri@gmail.com`.
+   - `JOB_ALERT_TO`: who gets the mail, addresses separated by commas. No address is kept in the code; with the Gmail secrets set and this one missing, the mail cannot be sent and the run fails.
 3. If these secrets are not configured, the runner will still generate the Excel artifact and create the assigned GitHub Issue without errors.
 
 ## LinkedIn input and automation boundary
@@ -191,9 +191,9 @@ Run it by hand: Actions -> **Naukri Scan** -> Run workflow (tick `dry_run` to sc
 
 1. **Instant Phone Push Notifications (ntfy.sh):**
    - Free, zero-setup, instant lock-screen push alerts with sound.
-   - Install the free **ntfy** app from Google Play Store or Apple App Store (or open [https://ntfy.sh/sukruth_job_alerts](https://ntfy.sh/sukruth_job_alerts) in any browser).
-   - Subscribe to topic: `sukruth_job_alerts`.
-   - That topic name is public: anyone who knows it can read the alerts or send one. To make it private, pick a long random name, add it as the repository secret `NTFY_TOPIC` (**Settings → Secrets and variables → Actions**), and subscribe to that name in the ntfy app instead. Both workflows use the secret when it is set.
+   - Install the free **ntfy** app from Google Play Store or Apple App Store.
+   - Subscribe to the topic named in the repository secret `NTFY_TOPIC` (**Settings → Secrets and variables → Actions**). Without that secret no push is sent.
+   - Anyone who knows a topic name can read its alerts or send one, so use a long random name and keep it only in the secret, never in the code.
    - Whenever matching roles are found, your phone buzzes with an instant notification containing the job title, company, match score, Easy Apply tag, and clickable link!
 2. **GitHub Mobile Push Notifications:**
    - Install the GitHub Mobile app on your phone and enable notifications.

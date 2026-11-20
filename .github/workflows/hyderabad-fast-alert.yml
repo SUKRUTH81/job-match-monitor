@@ -95,8 +95,9 @@ jobs:
           LINKEDIN_PROXY: ${{ secrets.LINKEDIN_PROXY }}
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          JOB_ALERT_TO: ${{ secrets.JOB_ALERT_TO || 'sukruth1435@gmail.com, akhilarohithayepuri@gmail.com' }}
-          # Phone push (ntfy.sh): the NTFY_TOPIC secret, or the script's built-in public topic.
+          # Who gets the mail: the JOB_ALERT_TO secret (addresses separated by commas). No address is kept here.
+          JOB_ALERT_TO: ${{ secrets.JOB_ALERT_TO }}
+          # Phone push (ntfy.sh): the topic is the NTFY_TOPIC secret; without it no push is sent.
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           INPUT_CANDIDATE_YOE: ${{ inputs.candidate_yoe || '2.0' }}
           INPUT_MIN_MATCH: ${{ inputs.min_match || '70' }}
