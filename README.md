@@ -138,6 +138,37 @@ Committing `data/linkedin_jobs.json` to the default branch triggers a run. The s
 8. Go to **Settings → Notifications** in GitHub and enable issue assignment / repository notifications. Watch the repository (or configure custom notifications for Issues) so assigned job-alert issues reach your GitHub inbox/mobile app.
 9. Check **Actions → Job Match Monitor** to inspect run logs. Download the Excel workbook from a successful run's **Artifacts** section.
 
+## Company career sites
+
+A third scan, beside the hourly report and the Hyderabad alert. Once an hour `company_portals.py` reads the career sites of these companies directly and mails each new opening once:
+
+| Company | Read from |
+|---|---|
+| NTT DATA | careers-inc.nttdata.com |
+| Amazon | amazon.jobs |
+| Cognizant | careers.cognizant.com |
+| Tiger Analytics | apply.workable.com (their job board) |
+| Infor | careers.infor.com |
+| JPMorgan Chase | jpmc.fa.oraclecloud.com |
+| Capgemini | capgemini.com job search |
+
+**Not covered:** EPAM (its India site hands a script only 10 of its roughly 340 jobs, in no date order) and Cimpress (its career site answers a script with an empty job list). Every mail repeats this, so the gap is not forgotten.
+
+**The rule.** An opening is reported when it is in Hyderabad, Bengaluru or Chennai (or remote in India), is one of your roles, is full-time, and:
+
+1. **Table 1 - for your experience:** the posting states years of experience and they include yours (`candidate_yoe`, default 2). Any skill match; sorted highest first.
+2. **Table 2 - experience not stated:** the posting gives no years at all, so it cannot be checked. Listed only at a skill match of `min_match` (default 60%) or more.
+
+A posting whose stated experience leaves you out (3+ years, 5-8 years, 0-1 year) is never listed, and neither is a Senior / Lead title that states no years. The title, location, full-time, Python role-fit and scoring rules are the ones the hourly report uses.
+
+**What it remembers.** A career site shows the day a job was posted, not the hour, so there is no one-hour window: the scan keeps a list of every posting it has judged (`data/company_portal_state.json`, kept in the Actions cache `company-portals-v1-`) and reports each opening once. The first run therefore reports what is open now. No mail is sent when nothing is new.
+
+**If a site cannot be read** the other sites are still reported, the mail says which one failed, and the run shows a warning on the Actions tab.
+
+**To add a company**, write a reader for its career site in `company_portals.py` (a function that returns that site's India postings) and add it to `PORTALS`.
+
+Run it by hand: Actions -> **Company Career Sites** -> Run workflow (tick `dry_run` to scan and log without sending or remembering anything), or locally `python company_portals.py --dry-run`. `hourly-timer.yml` starts it every hour, right after the job monitor. To stop it, disable the **Company Career Sites** workflow.
+
 ## Notifications (Push, Email & Issues)
 
 1. **Instant Phone Push Notifications (ntfy.sh):**

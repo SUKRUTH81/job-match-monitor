@@ -939,6 +939,10 @@ def _canonical_linkedin_job_url(raw_url: Any, job_id: Any = None) -> str:
 
 
 def clean_job_url(job: Dict[str, Any]) -> str:
+    if job.get("portal"):
+        # A record from a company career site (company_portals.py): its own https link is the job link.
+        url = str(job.get("job_url") or job.get("apply_url") or "").strip()
+        return url if url.startswith("https://") else ""
     return _canonical_linkedin_job_url(
         job.get("apply_url") or job.get("job_url") or job.get("url"),
         job.get("job_id") or job.get("id"),
@@ -2346,6 +2350,8 @@ def experience_label(job: Dict[str, Any]) -> str:
 
 
 def source_is_allowed(job: Dict[str, Any]) -> bool:
+    if job.get("portal"):
+        return bool(clean_job_url(job))
     source = str(job.get("source") or "").lower()
     url = clean_job_url(job).lower()
     # This monitor is intentionally LinkedIn-only; no other job sources are accepted.

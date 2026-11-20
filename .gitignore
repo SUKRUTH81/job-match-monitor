@@ -3,3 +3,5 @@ __pycache__/
 .env
 reports/
 data/seen_job_ids.json
+data/company_portal_state.json
+data/hyderabad_alert_state.json
