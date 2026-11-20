@@ -2,13 +2,14 @@
 """Naukri: new openings for the candidate's experience, read from Naukri's public job search.
 
 No Naukri account is used and nothing is signed in to. A real browser opens the same public search
-pages a visitor sees (Naukri gives its job list only to a full browser) and this script reads the
+page a visitor sees (Naukri gives its job list only to a full browser) and this script reads the
 list the page receives. It solves no CAPTCHA and hides nothing about the browser: when Naukri
-answers with a block page or a CAPTCHA demand, the scan keeps what it has read so far and stops.
+answers with a block page or a CAPTCHA demand, the scan stops.
 
-Naukri refuses a browser that opens many pages, so the scan is deliberately small: two searches a
-run (the three cities together, and remote), a few result pages each, with a pause between pages.
-Some runs are refused outright; the next run tries again from a new runner.
+Naukri drops a browser that opens a second page, so each run opens exactly one: one search, its
+newest 20 postings. The searches take turns, hour by hour (see SEARCHES), so each is read a few
+times a day. Some runs are refused outright; that hour is skipped and the next run carries on.
+Coverage is therefore best effort, not complete.
 
 It is meant to run on a GitHub runner (see .github/workflows/naukri-scan.yml), so the requests come
 from GitHub's network, not from the candidate's own computer.
@@ -25,8 +26,9 @@ from __future__ import annotations
 import argparse
 import logging
 import re
-from typing import Any, Dict, List, Sequence, Tuple
-from urllib.parse import parse_qs, quote, urlsplit
+import time
+from typing import Any, Dict, List, Tuple
+from urllib.parse import parse_qs, urlsplit
 
 import company_portals as cp
 import job_match_runner as core
@@ -35,24 +37,26 @@ LOG = logging.getLogger("naukri_scan")
 
 SITE = "https://www.naukri.com"
 STATE_FILE = core.DATA_DIR / "naukri_state.json"
-SEARCH_KEYWORDS = ["python developer", "ai engineer", "generative ai", "software engineer", "full stack developer", "backend developer"]
-# (name in the log and the mail, places in the address, extra filter). One search covers every keyword.
-# "bangalore" is Naukri's own spelling in addresses.
-SEARCHES: List[Tuple[str, Tuple[str, ...], str]] = [
-    ("Hyderabad, Bengaluru, Chennai", ("hyderabad", "bangalore", "chennai"), ""),
-    ("Remote", (), "&wfhType=2"),
+# The searches, read one per run in turn. Each is one keyword in one place, which is the form of
+# address Naukri filters correctly (a combined address was tried: Naukri ignored its experience filter).
+# (name in the log and the mail, keyword, place in the address, extra filter). "bangalore" is Naukri's own spelling.
+SEARCHES: List[Tuple[str, str, str, str]] = [
+    (f"{keyword} / {name}", keyword, place, extra)
+    for keyword in ("python developer", "ai engineer")
+    for name, place, extra in (("Hyderabad", "hyderabad", ""), ("Bengaluru", "bangalore", ""), ("Chennai", "chennai", ""), ("Remote", "", "&wfhType=2"))
 ]
-# Result pages read per search, newest first (20 jobs a page). The scan runs every hour.
-PAGES_PER_SEARCH = 3
+# Result pages opened per run. Naukri drops the connection on a second page, so this stays 1.
+PAGES_PER_RUN = 1
 # Days back Naukri is asked for. One day is its shortest window.
 JOB_AGE_DAYS = 1
-# Wait between two search pages. A visitor does not open a page every second, and neither does this.
-PAGE_PAUSE_MS = 8000
+# A run that is refused outright is a skipped hour, not a failure, until this many happen in a row.
+REFUSED_RUNS_TO_FAIL = 6
 
 REPORT: Dict[str, Any] = {
     "name": "Naukri",
     "short": "Naukri",
-    "read_from": "Read from Naukri's public job search, without a login: {sites}; jobs posted in the last day.",
+    "read_from": "Read from Naukri's public job search, without a login. This run read: {sites} (the 20 newest postings of the last day). "
+                 "Python developer and AI engineer searches in Hyderabad, Bengaluru, Chennai and remote take turns, one a run.",
     "footer": 'Automated report from the Naukri scan, which runs every hour. "Posted" is what Naukri shows.',
     "preview": "naukri_preview.html",
     "not_covered": {},
@@ -60,21 +64,17 @@ REPORT: Dict[str, Any] = {
 }
 
 
-def _slug(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+def search_address(keyword: str, place: str, extra: str, page: int, candidate_yoe: float) -> str:
+    """Address of one result page: one keyword in one place, the candidate's experience, last day, newest first."""
+    slug = re.sub(r"[^a-z0-9]+", "-", keyword.lower()).strip("-")
+    path = f"{slug}-jobs" + (f"-in-{place}" if place else "") + (f"-{page}" if page > 1 else "")
+    return f"{SITE}/{path}?experience={int(candidate_yoe)}&jobAge={JOB_AGE_DAYS}&sort=f{extra}"
 
 
-def search_address(keywords: Sequence[str], places: Sequence[str], extra: str, page: int, candidate_yoe: float) -> str:
-    """Address of one result page: every keyword (any of them) in every place, newest first."""
-    path = "-".join(_slug(k) for k in keywords) + "-jobs"
-    if places:
-        path += "-in-" + "-".join(_slug(p) for p in places)
-    if page > 1:
-        path += f"-{page}"
-    query = "k=" + quote(", ".join(keywords))
-    if places:
-        query += "&l=" + quote(", ".join(places))
-    return f"{SITE}/{path}?{query}&experience={int(candidate_yoe)}&jobAge={JOB_AGE_DAYS}&sort=f{extra}"
+def search_for_this_run(turn: int | None = None) -> Tuple[str, str, str, str]:
+    """The search whose turn it is. The hour of the clock picks it, so hourly runs go through all of them."""
+    index = int(time.time() // 3600) if turn is None else int(turn)
+    return SEARCHES[index % len(SEARCHES)]
 
 
 def _years(value: Any) -> float | None:
@@ -118,8 +118,8 @@ def naukri_records(answer: Any) -> List[Dict[str, Any]]:
     return [r for r in (naukri_record(item) for item in jobs or [] if isinstance(item, dict)) if r]
 
 
-def read_naukri(candidate_yoe: float, keywords: Sequence[str], searches: Sequence[Tuple[str, Sequence[str], str]]):
-    """A reader for company_portals.run_scan: opens the search pages in a real browser, no login."""
+def read_naukri(candidate_yoe: float, search: Tuple[str, str, str, str]):
+    """A reader for company_portals.run_scan: opens one search in a real browser, no login."""
 
     def read(site: Any) -> List[Dict[str, Any]]:
         from playwright.sync_api import sync_playwright
@@ -134,6 +134,7 @@ def read_naukri(candidate_yoe: float, keywords: Sequence[str], searches: Sequenc
             except Exception:  # the page moved on, or the answer was not JSON
                 answers.append((response.status, None, response.url))
 
+        name, keyword, place, extra = search
         jobs: Dict[str, Dict[str, Any]] = {}
         pages = 0
         refusal = ""
@@ -142,42 +143,35 @@ def read_naukri(candidate_yoe: float, keywords: Sequence[str], searches: Sequenc
             page = browser.new_context(locale="en-IN", timezone_id="Asia/Kolkata", viewport={"width": 1366, "height": 900}).new_page()
             page.on("response", on_response)
             try:
-                for name, places, extra in searches:
-                    for number in range(1, PAGES_PER_SEARCH + 1):
-                        if pages:
-                            page.wait_for_timeout(PAGE_PAUSE_MS)
-                        answers.clear()
-                        pages += 1
-                        status, problem = None, ""
-                        try:
-                            opened = page.goto(search_address(keywords, places, extra, number, candidate_yoe),
-                                               wait_until="domcontentloaded", timeout=45000)
-                            status = opened.status if opened else None
-                        except Exception as exc:
-                            problem = " ".join(str(exc).split())[:90]
-                        for _ in range(20):
-                            if answers or problem:
-                                break
-                            page.wait_for_timeout(1000)
-                        listed = next(((data, url) for code, data, url in answers if code == 200 and isinstance(data, dict)), None)
-                        if listed is None:
-                            # A block page, a CAPTCHA demand, or a dropped connection. Nothing is worked around
-                            # and nothing is retried: the scan ends here with what it has.
-                            codes = [code for code, _, _ in answers]
-                            refusal = f"{name} page {number}: page HTTP {status}, search answers {codes or 'none'}" + (f", {problem}" if problem else "")
+                for number in range(1, PAGES_PER_RUN + 1):
+                    answers.clear()
+                    pages += 1
+                    status, problem = None, ""
+                    try:
+                        opened = page.goto(search_address(keyword, place, extra, number, candidate_yoe), wait_until="domcontentloaded", timeout=45000)
+                        status = opened.status if opened else None
+                    except Exception as exc:
+                        problem = " ".join(str(exc).split())[:90]
+                    for _ in range(20):
+                        if answers or problem:
                             break
-                        data, asked = listed
-                        if number == 1:
-                            sent = parse_qs(urlsplit(asked).query)
-                            LOG.info("Naukri search %r: keyword=%s location=%s", name, sent.get("keyword"), sent.get("location"))
-                        total = int(data.get("noOfJobs") or 0)
-                        on_page = len(data.get("jobDetails") or [])
-                        for record in naukri_records(data):
-                            jobs.setdefault(record["job_id"], record)
-                        LOG.info("Naukri search %r page %d: %d posting(s) in the last day, %d on this page.", name, number, total, on_page)
-                        if on_page < 20 or number * 20 >= total:
-                            break
-                    if refusal:
+                        page.wait_for_timeout(1000)
+                    listed = next(((data, url) for code, data, url in answers if code == 200 and isinstance(data, dict)), None)
+                    if listed is None:
+                        # A block page, a CAPTCHA demand, or a dropped connection. Nothing is worked around
+                        # and nothing is retried: the scan ends here with what it has.
+                        codes = [code for code, _, _ in answers]
+                        refusal = f"{name} page {number}: page HTTP {status}, search answers {codes or 'none'}" + (f", {problem}" if problem else "")
+                        break
+                    data, asked = listed
+                    sent = parse_qs(urlsplit(asked).query)
+                    total = int(data.get("noOfJobs") or 0)
+                    on_page = len(data.get("jobDetails") or [])
+                    for record in naukri_records(data):
+                        jobs.setdefault(record["job_id"], record)
+                    LOG.info("Naukri search %r (keyword=%s location=%s experience=%s): %d posting(s) in the last day, %d read.",
+                             name, sent.get("keyword"), sent.get("location"), sent.get("experience"), total, on_page)
+                    if on_page < 20 or number * 20 >= total:
                         break
             finally:
                 browser.close()
@@ -187,7 +181,6 @@ def read_naukri(candidate_yoe: float, keywords: Sequence[str], searches: Sequenc
             if not jobs:
                 raise cp.PortalError(f"Naukri refused the browser ({refusal}); nothing was retried or worked around")
             LOG.warning("Naukri refused the browser part-way (%s); this run goes on with the %d posting(s) already read.", refusal, len(jobs))
-            print(f"::warning::Naukri refused the browser part-way: {refusal}")
         return list(jobs.values())
 
     return read
@@ -197,17 +190,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="New openings on Naukri's public search, strictly for the candidate's experience")
     parser.add_argument("--candidate-yoe", type=float, default=2.0, help="Candidate years of experience (default 2.0)")
     parser.add_argument("--min-match", type=int, default=60, help="Skill match a posting needs to be listed (default 60)")
-    parser.add_argument("--keywords", type=str, default="", help="Comma-separated search words (default: the built-in list)")
+    parser.add_argument("--turn", type=int, default=None, help="Which search to read, as a number (default: by the hour of the clock)")
     parser.add_argument("--dry-run", action="store_true", help="Send nothing and keep no state; write the mail to reports/ instead")
     args = parser.parse_args()
-    keywords = [k.strip() for k in args.keywords.split(",") if k.strip()] or SEARCH_KEYWORDS
+    search = search_for_this_run(args.turn)
     args.company_list = ["naukri"]
-    args.keyword_list = keywords
+    args.keyword_list = [search[1]]
     # Naukri carries far more postings than a company site, so table 1 has the same floor as table 2.
     args.stated_min_match = args.min_match
-    portals = {"naukri": ("Naukri", read_naukri(args.candidate_yoe, keywords, SEARCHES))}
-    report = dict(REPORT, read_from=REPORT["read_from"].replace("{sites}", "; ".join(name for name, _, _ in SEARCHES)))
-    return cp.run_scan(args, portals=portals, report=report)
+    portals = {"naukri": ("Naukri", read_naukri(args.candidate_yoe, search))}
+    report = dict(REPORT, read_from=REPORT["read_from"].replace("{sites}", search[0]))
+    code = cp.run_scan(args, portals=portals, report=report)
+    refused_runs = int(cp.load_state(STATE_FILE)["failures"].get("naukri", 0) or 0)
+    if code and 0 < refused_runs < REFUSED_RUNS_TO_FAIL:
+        LOG.warning("Naukri refused this run (%d in a row); the hour is skipped. The run fails only after %d in a row.",
+                    refused_runs, REFUSED_RUNS_TO_FAIL)
+        print(f"::warning::Naukri refused this run ({refused_runs} in a row); this hour's search was skipped.")
+        return 0
+    return code
 
 
 if __name__ == "__main__":

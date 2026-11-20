@@ -177,9 +177,9 @@ A fourth scan. Once an hour `naukri_scan.py` reads Naukri's public job search an
 - **Not from your computer.** Every request comes from the GitHub runner. Do not run this script on your own machine if you do not want your own address to reach Naukri.
 - **No CAPTCHA is solved.** If Naukri answers with a block page or asks for a CAPTCHA, the run stops, shows as failed on the Actions tab, and nothing is worked around.
 
-**What it searches:** Python developer, AI engineer, generative AI, software engineer, full stack developer and backend developer, posted in the last day, newest first. It is deliberately small, because Naukri refuses a browser that opens many pages: two searches a run (Hyderabad, Bengaluru and Chennai together; and remote), up to 3 result pages each, with a pause between pages.
+**What it reads:** one search page a run - the 20 newest postings of the last day for one keyword in one place. Eight searches take turns, hour by hour: Python developer and AI engineer, each in Hyderabad, Bengaluru, Chennai and remote. So each search is read three times a day. It is this small on purpose: Naukri drops a browser that opens a second page.
 
-**When Naukri refuses.** Some runs are refused part-way or outright. A run refused part-way reports what it had read; a run refused outright shows as failed on the Actions tab and sends nothing. The next hourly run tries again. Coverage is therefore best effort, not complete.
+**When Naukri refuses.** Some runs are refused outright (in testing, about one in five). That hour's search is skipped, the run shows a warning, and nothing is retried or worked around; after six refused runs in a row the run shows as failed on the Actions tab. Coverage is therefore best effort, not complete: a busy search can post more than 20 jobs between two of its turns.
 
 **The rule:** the same title, location, full-time and Python role-fit rules as the hourly report; the experience range Naukri states has to include yours (`candidate_yoe`, default 2); and the skill match has to be `min_match` (default 60%) or more. A posting with no range stated goes into table 2 of the mail.
 
