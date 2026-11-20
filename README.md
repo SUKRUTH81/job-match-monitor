@@ -177,7 +177,9 @@ A fourth scan. Once an hour `naukri_scan.py` reads Naukri's public job search an
 - **Not from your computer.** Every request comes from the GitHub runner. Do not run this script on your own machine if you do not want your own address to reach Naukri.
 - **No CAPTCHA is solved.** If Naukri answers with a block page or asks for a CAPTCHA, the run stops, shows as failed on the Actions tab, and nothing is worked around.
 
-**What it searches:** Python developer, AI engineer, generative AI, software engineer, full stack developer and backend developer, in Hyderabad, Bengaluru, Chennai and remote, posted in the last day, newest first (up to 3 result pages a search).
+**What it searches:** Python developer, AI engineer, generative AI, software engineer, full stack developer and backend developer, posted in the last day, newest first. It is deliberately small, because Naukri refuses a browser that opens many pages: two searches a run (Hyderabad, Bengaluru and Chennai together; and remote), up to 3 result pages each, with a pause between pages.
+
+**When Naukri refuses.** Some runs are refused part-way or outright. A run refused part-way reports what it had read; a run refused outright shows as failed on the Actions tab and sends nothing. The next hourly run tries again. Coverage is therefore best effort, not complete.
 
 **The rule:** the same title, location, full-time and Python role-fit rules as the hourly report; the experience range Naukri states has to include yours (`candidate_yoe`, default 2); and the skill match has to be `min_match` (default 60%) or more. A posting with no range stated goes into table 2 of the mail.
 

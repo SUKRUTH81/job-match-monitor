@@ -43,11 +43,15 @@ def item(job_id, title="Python Developer", low="2", high="5", place="Hyderabad",
 
 
 # --- 1. search addresses ---------------------------------------------------------------------------
-check("address: city, experience, last day, newest first",
-      nk.search_address("python developer", "hyderabad", "", 1, 2.0) == "https://www.naukri.com/python-developer-jobs-in-hyderabad?experience=2&jobAge=1&sort=f",
-      nk.search_address("python developer", "hyderabad", "", 1, 2.0))
-check("address: page 2", nk.search_address("ai engineer", "bangalore", "", 2, 2.0) == "https://www.naukri.com/ai-engineer-jobs-in-bangalore-2?experience=2&jobAge=1&sort=f")
-check("address: remote, no city", nk.search_address("generative ai", "", "&wfhType=2", 1, 2.0) == "https://www.naukri.com/generative-ai-jobs?experience=2&jobAge=1&sort=f&wfhType=2")
+KW = ["python developer", "ai engineer"]
+check("address: every keyword in every city, your experience, last day, newest first",
+      nk.search_address(KW, ("hyderabad", "bangalore"), "", 1, 2.0) ==
+      "https://www.naukri.com/python-developer-ai-engineer-jobs-in-hyderabad-bangalore?k=python%20developer%2C%20ai%20engineer&l=hyderabad%2C%20bangalore&experience=2&jobAge=1&sort=f",
+      nk.search_address(KW, ("hyderabad", "bangalore"), "", 1, 2.0))
+check("address: page 2", nk.search_address(KW, ("hyderabad",), "", 2, 2.0).startswith("https://www.naukri.com/python-developer-ai-engineer-jobs-in-hyderabad-2?k="))
+check("address: remote, no city", nk.search_address(KW, (), "&wfhType=2", 1, 2.0) ==
+      "https://www.naukri.com/python-developer-ai-engineer-jobs?k=python%20developer%2C%20ai%20engineer&experience=2&jobAge=1&sort=f&wfhType=2")
+check("the scan is small: two searches, at most three pages each", len(nk.SEARCHES) == 2 and nk.PAGES_PER_SEARCH <= 3 and nk.PAGE_PAUSE_MS >= 5000)
 check("the scan needs no account: nothing in it signs in", not any(word in Path(nk.__file__).read_text(encoding="utf-8").lower()
                                                              for word in ("password", "login(", "nlogin", "cookie")))
 
@@ -138,36 +142,45 @@ def install_browser(script):
 
 
 def paged(url):
-    if "-jobs-in-hyderabad-2?" in url:
+    if "wfhType=2" in url:
+        return 200, [(200, {"noOfJobs": 0, "jobDetails": []})]
+    if "-jobs-in-hyderabad-bangalore-chennai-2?" in url:
         return 200, [(200, {"noOfJobs": 25, "jobDetails": [item(2000 + n) for n in range(5)]})]
-    if "-jobs-in-hyderabad?" in url:
-        return 200, [(200, {"noOfJobs": 25, "jobDetails": [item(1000 + n) for n in range(20)]})]
-    return 200, [(200, {"noOfJobs": 0, "jobDetails": []})]
+    return 200, [(200, {"noOfJobs": 25, "jobDetails": [item(1000 + n) for n in range(20)]})]
+
+
+def short(url):
+    return url.split("?")[0].rsplit("/", 1)[1] + ("+remote" if "wfhType=2" in url else "")
 
 
 page, launches = install_browser(paged)
-places = [("Hyderabad", "hyderabad", ""), ("Remote", "", "&wfhType=2")]
-jobs = nk.read_naukri(2.0, ["python developer"], places)(None)
-check("walk: page 2 is read when there are more than 20, page 3 is not", [u.split("?")[0].rsplit("/", 1)[1] for u in page.visited] ==
-      ["python-developer-jobs-in-hyderabad", "python-developer-jobs-in-hyderabad-2", "python-developer-jobs"], str(page.visited))
+jobs = nk.read_naukri(2.0, ["python developer"], nk.SEARCHES)(None)
+check("walk: page 2 is read when there are more than 20, page 3 is not; then the remote search",
+      [short(u) for u in page.visited] == ["python-developer-jobs-in-hyderabad-bangalore-chennai", "python-developer-jobs-in-hyderabad-bangalore-chennai-2",
+                                           "python-developer-jobs+remote"], str([short(u) for u in page.visited]))
 check("walk: every job of both pages, once", len(jobs) == 25 and len({j["job_id"] for j in jobs}) == 25, str(len(jobs)))
 check("walk: a full browser window is used, not a hidden one", launches == [{"headless": False}], str(launches))
 
 page, _ = install_browser(lambda url: (403, []))
 try:
-    nk.read_naukri(2.0, nk.SEARCH_KEYWORDS, nk.SEARCH_PLACES)(None)
+    nk.read_naukri(2.0, nk.SEARCH_KEYWORDS, nk.SEARCHES)(None)
     refused = "no error"
 except cp.PortalError as exc:
     refused = str(exc)
-check("refused (block page): the scan stops after three tries and says so", "refused the browser 3 times" in refused and len(page.visited) == 3, f"{refused} {len(page.visited)}")
+check("refused at once (block page): one page opened, no retry, the scan says so", "refused the browser" in refused and "HTTP 403" in refused and len(page.visited) == 1,
+      f"{refused} {len(page.visited)}")
 
 page, _ = install_browser(lambda url: (200, [(406, {"message": "recaptcha required", "statusCode": 406})]))
 try:
-    nk.read_naukri(2.0, nk.SEARCH_KEYWORDS, nk.SEARCH_PLACES)(None)
+    nk.read_naukri(2.0, nk.SEARCH_KEYWORDS, nk.SEARCHES)(None)
     refused = "no error"
 except cp.PortalError as exc:
     refused = str(exc)
-check("refused (CAPTCHA demanded): nothing is solved or retried; the scan stops", "search answers [406]" in refused and len(page.visited) == 3, f"{refused} {len(page.visited)}")
+check("refused at once (CAPTCHA demanded): nothing is solved or retried", "search answers [406]" in refused and len(page.visited) == 1, f"{refused} {len(page.visited)}")
+
+page, _ = install_browser(lambda url: paged(url) if url.split("?")[0].endswith("chennai") else (200, [(406, {"message": "recaptcha required"})]))
+jobs = nk.read_naukri(2.0, ["python developer"], nk.SEARCHES)(None)
+check("refused part-way: the postings already read are kept and the scan stops there", len(jobs) == 20 and len(page.visited) == 2, f"{len(jobs)} {len(page.visited)}")
 
 
 # --- 4. a scan: its own mail and its own memory ---------------------------------------------------------

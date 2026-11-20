@@ -3,8 +3,12 @@
 
 No Naukri account is used and nothing is signed in to. A real browser opens the same public search
 pages a visitor sees (Naukri gives its job list only to a full browser) and this script reads the
-list the page receives. It solves no CAPTCHA: if Naukri answers with a block page or a CAPTCHA, the
-scan reports that it was refused and stops.
+list the page receives. It solves no CAPTCHA and hides nothing about the browser: when Naukri
+answers with a block page or a CAPTCHA demand, the scan keeps what it has read so far and stops.
+
+Naukri refuses a browser that opens many pages, so the scan is deliberately small: two searches a
+run (the three cities together, and remote), a few result pages each, with a pause between pages.
+Some runs are refused outright; the next run tries again from a new runner.
 
 It is meant to run on a GitHub runner (see .github/workflows/naukri-scan.yml), so the requests come
 from GitHub's network, not from the candidate's own computer.
@@ -21,8 +25,8 @@ from __future__ import annotations
 import argparse
 import logging
 import re
-import time
 from typing import Any, Dict, List, Sequence, Tuple
+from urllib.parse import parse_qs, quote, urlsplit
 
 import company_portals as cp
 import job_match_runner as core
@@ -32,21 +36,18 @@ LOG = logging.getLogger("naukri_scan")
 SITE = "https://www.naukri.com"
 STATE_FILE = core.DATA_DIR / "naukri_state.json"
 SEARCH_KEYWORDS = ["python developer", "ai engineer", "generative ai", "software engineer", "full stack developer", "backend developer"]
-# (name, place in the address, extra filter). "bangalore" is Naukri's own spelling in addresses.
-SEARCH_PLACES: List[Tuple[str, str, str]] = [
-    ("Hyderabad", "hyderabad", ""),
-    ("Bengaluru", "bangalore", ""),
-    ("Chennai", "chennai", ""),
-    ("Remote", "", "&wfhType=2"),
+# (name in the log and the mail, places in the address, extra filter). One search covers every keyword.
+# "bangalore" is Naukri's own spelling in addresses.
+SEARCHES: List[Tuple[str, Tuple[str, ...], str]] = [
+    ("Hyderabad, Bengaluru, Chennai", ("hyderabad", "bangalore", "chennai"), ""),
+    ("Remote", (), "&wfhType=2"),
 ]
 # Result pages read per search, newest first (20 jobs a page). The scan runs every hour.
 PAGES_PER_SEARCH = 3
 # Days back Naukri is asked for. One day is its shortest window.
 JOB_AGE_DAYS = 1
-SCAN_BUDGET_SECONDS = 20 * 60.0
 # Wait between two search pages. A visitor does not open a page every second, and neither does this.
-PAGE_PAUSE_MS = 6000
-REFUSALS_TO_STOP = 3
+PAGE_PAUSE_MS = 8000
 
 REPORT: Dict[str, Any] = {
     "name": "Naukri",
@@ -59,10 +60,21 @@ REPORT: Dict[str, Any] = {
 }
 
 
-def search_address(keyword: str, place: str, extra: str, page: int, candidate_yoe: float) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", keyword.lower()).strip("-")
-    path = f"{slug}-jobs" + (f"-in-{place}" if place else "") + (f"-{page}" if page > 1 else "")
-    return f"{SITE}/{path}?experience={int(candidate_yoe)}&jobAge={JOB_AGE_DAYS}&sort=f{extra}"
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def search_address(keywords: Sequence[str], places: Sequence[str], extra: str, page: int, candidate_yoe: float) -> str:
+    """Address of one result page: every keyword (any of them) in every place, newest first."""
+    path = "-".join(_slug(k) for k in keywords) + "-jobs"
+    if places:
+        path += "-in-" + "-".join(_slug(p) for p in places)
+    if page > 1:
+        path += f"-{page}"
+    query = "k=" + quote(", ".join(keywords))
+    if places:
+        query += "&l=" + quote(", ".join(places))
+    return f"{SITE}/{path}?{query}&experience={int(candidate_yoe)}&jobAge={JOB_AGE_DAYS}&sort=f{extra}"
 
 
 def _years(value: Any) -> float | None:
@@ -106,75 +118,76 @@ def naukri_records(answer: Any) -> List[Dict[str, Any]]:
     return [r for r in (naukri_record(item) for item in jobs or [] if isinstance(item, dict)) if r]
 
 
-def read_naukri(candidate_yoe: float, keywords: Sequence[str], places: Sequence[Tuple[str, str, str]]):
+def read_naukri(candidate_yoe: float, keywords: Sequence[str], searches: Sequence[Tuple[str, Sequence[str], str]]):
     """A reader for company_portals.run_scan: opens the search pages in a real browser, no login."""
 
     def read(site: Any) -> List[Dict[str, Any]]:
         from playwright.sync_api import sync_playwright
 
-        answers: List[Tuple[int, Any]] = []
+        answers: List[Tuple[int, Any, str]] = []
 
         def on_response(response: Any) -> None:
             if "/jobapi/v3/search" not in response.url:
                 return
             try:
-                answers.append((response.status, response.json()))
+                answers.append((response.status, response.json(), response.url))
             except Exception:  # the page moved on, or the answer was not JSON
-                answers.append((response.status, None))
+                answers.append((response.status, None, response.url))
 
         jobs: Dict[str, Dict[str, Any]] = {}
-        refused = pages = 0
-        deadline = time.monotonic() + SCAN_BUDGET_SECONDS
+        pages = 0
+        refusal = ""
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=False)
             page = browser.new_context(locale="en-IN", timezone_id="Asia/Kolkata", viewport={"width": 1366, "height": 900}).new_page()
             page.on("response", on_response)
             try:
-                for place_name, place, extra in places:
-                    for keyword in keywords:
-                        for number in range(1, PAGES_PER_SEARCH + 1):
-                            if time.monotonic() > deadline:
-                                raise cp.PortalError("time limit for the Naukri scan reached")
-                            answers.clear()
-                            pages += 1
-                            status = None
-                            try:
-                                opened = page.goto(search_address(keyword, place, extra, number, candidate_yoe),
-                                                   wait_until="domcontentloaded", timeout=45000)
-                                status = opened.status if opened else None
-                            except Exception as exc:
-                                reason = " ".join(str(exc).split())[:160]
-                                LOG.info("Naukri: %s / %s page %d did not open (%s).", keyword, place_name, number, reason)
-                            for _ in range(20):
-                                if answers:
-                                    break
-                                page.wait_for_timeout(1000)
-                            listed = next((data for code, data in answers if code == 200 and isinstance(data, dict)), None)
-                            if listed is None:
-                                # A block page, a CAPTCHA demand, or no answer at all. Nothing is worked around.
-                                refused += 1
-                                codes = [code for code, _ in answers]
-                                LOG.warning("Naukri gave no job list for %s / %s page %d (page HTTP %s, search answers %s).",
-                                            keyword, place_name, number, status, codes or "none")
-                                if refused >= REFUSALS_TO_STOP:
-                                    raise cp.PortalError(
-                                        f"Naukri refused the browser {refused} times in a row "
-                                        f"(page HTTP {status}, search answers {codes or 'none'}); the scan stopped without retrying"
-                                    )
-                                page.wait_for_timeout(PAGE_PAUSE_MS)
-                                break
-                            refused = 0
-                            found = naukri_records(listed)
-                            for record in found:
-                                jobs.setdefault(record["job_id"], record)
-                            total = int(listed.get("noOfJobs") or 0)
+                for name, places, extra in searches:
+                    for number in range(1, PAGES_PER_SEARCH + 1):
+                        if pages:
                             page.wait_for_timeout(PAGE_PAUSE_MS)
-                            if len(listed.get("jobDetails") or []) < 20 or number * 20 >= total:
+                        answers.clear()
+                        pages += 1
+                        status, problem = None, ""
+                        try:
+                            opened = page.goto(search_address(keywords, places, extra, number, candidate_yoe),
+                                               wait_until="domcontentloaded", timeout=45000)
+                            status = opened.status if opened else None
+                        except Exception as exc:
+                            problem = " ".join(str(exc).split())[:90]
+                        for _ in range(20):
+                            if answers or problem:
                                 break
+                            page.wait_for_timeout(1000)
+                        listed = next(((data, url) for code, data, url in answers if code == 200 and isinstance(data, dict)), None)
+                        if listed is None:
+                            # A block page, a CAPTCHA demand, or a dropped connection. Nothing is worked around
+                            # and nothing is retried: the scan ends here with what it has.
+                            codes = [code for code, _, _ in answers]
+                            refusal = f"{name} page {number}: page HTTP {status}, search answers {codes or 'none'}" + (f", {problem}" if problem else "")
+                            break
+                        data, asked = listed
+                        if number == 1:
+                            sent = parse_qs(urlsplit(asked).query)
+                            LOG.info("Naukri search %r: keyword=%s location=%s", name, sent.get("keyword"), sent.get("location"))
+                        total = int(data.get("noOfJobs") or 0)
+                        on_page = len(data.get("jobDetails") or [])
+                        for record in naukri_records(data):
+                            jobs.setdefault(record["job_id"], record)
+                        LOG.info("Naukri search %r page %d: %d posting(s) in the last day, %d on this page.", name, number, total, on_page)
+                        if on_page < 20 or number * 20 >= total:
+                            break
+                    if refusal:
+                        break
             finally:
                 browser.close()
         if site is not None:
             site.requests_made = pages
+        if refusal:
+            if not jobs:
+                raise cp.PortalError(f"Naukri refused the browser ({refusal}); nothing was retried or worked around")
+            LOG.warning("Naukri refused the browser part-way (%s); this run goes on with the %d posting(s) already read.", refusal, len(jobs))
+            print(f"::warning::Naukri refused the browser part-way: {refusal}")
         return list(jobs.values())
 
     return read
@@ -192,8 +205,8 @@ def main() -> int:
     args.keyword_list = keywords
     # Naukri carries far more postings than a company site, so table 1 has the same floor as table 2.
     args.stated_min_match = args.min_match
-    portals = {"naukri": ("Naukri", read_naukri(args.candidate_yoe, keywords, SEARCH_PLACES))}
-    report = dict(REPORT, read_from=REPORT["read_from"].replace("{sites}", ", ".join(name for name, _, _ in SEARCH_PLACES)))
+    portals = {"naukri": ("Naukri", read_naukri(args.candidate_yoe, keywords, SEARCHES))}
+    report = dict(REPORT, read_from=REPORT["read_from"].replace("{sites}", "; ".join(name for name, _, _ in SEARCHES)))
     return cp.run_scan(args, portals=portals, report=report)
 
 
