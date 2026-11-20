@@ -7,7 +7,7 @@ name: Hyderabad Fast Alert
 # when a new opening is all of:
 #   - in Hyderabad, whatever the work mode (on-site, hybrid, remote),
 #   - full-time,
-#   - a skill match of 80% or more,
+#   - a skill match of 70% or more,
 #   - asking for experience that includes the candidate's years. A posting that states no
 #     experience never starts an alert; if it meets the other rules it is listed in a second
 #     table of the next alert.
@@ -29,9 +29,9 @@ on:
         required: false
         default: '2.0'
       min_match:
-        description: 'Skill match needed for an alert, in percent (default 80)'
+        description: 'Skill match needed for an alert, in percent (default 70)'
         required: false
-        default: '80'
+        default: '70'
       watch_minutes:
         description: 'Minutes this run keeps scanning (0 = scan once). Later runs go back to 25.'
         required: false
@@ -97,7 +97,7 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           JOB_ALERT_TO: ${{ secrets.JOB_ALERT_TO || 'sukruth1435@gmail.com, akhilarohithayepuri@gmail.com' }}
           INPUT_CANDIDATE_YOE: ${{ inputs.candidate_yoe || '2.0' }}
-          INPUT_MIN_MATCH: ${{ inputs.min_match || '80' }}
+          INPUT_MIN_MATCH: ${{ inputs.min_match || '70' }}
         run: |
           python job_match_runner.py --fast-alert --source guest --hours 1 \
             --candidate-yoe "$INPUT_CANDIDATE_YOE" --fast-min-match "$INPUT_MIN_MATCH" \
@@ -122,7 +122,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           THIS_WORKFLOW: hyderabad-fast-alert.yml
           INPUT_CANDIDATE_YOE: ${{ inputs.candidate_yoe || '2.0' }}
-          INPUT_MIN_MATCH: ${{ inputs.min_match || '80' }}
+          INPUT_MIN_MATCH: ${{ inputs.min_match || '70' }}
         run: |
           newer() {
             gh api "repos/$REPO/actions/workflows/$THIS_WORKFLOW/runs?per_page=30" \

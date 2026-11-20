@@ -18,7 +18,7 @@ An alert goes out when a new opening is all of:
 
 - in **Hyderabad**, whatever the work mode (on-site, hybrid or remote);
 - **full-time**;
-- a skill match of **80% or more**;
+- a skill match of **70% or more**;
 - asking for experience that **includes your years** (2 by default: 0-2, 1-3, 2-4, 2+ ...). A posting that states no experience never starts an alert.
 
 It must also pass every filter of the hourly report (target title, Python developer role).
@@ -26,7 +26,7 @@ It must also pass every filter of the hourly report (target title, Python develo
 What you get: a phone push (ntfy, urgent priority, opens the job), a mail named **`Hyderabad (<work mode>) jobs apply fast`** to the same recipients as the hourly mail, and a GitHub Issue. The mail and the issue hold two tables:
 
 1. **Apply now** - the openings that met every rule above.
-2. **Also qualified, but the posting states no experience** - Hyderabad, full-time, 80%+, with no years stated. These never start an alert by themselves; they are listed with the next alert, if one goes out within 24 hours of their posting.
+2. **Also qualified, but the posting states no experience** - Hyderabad, full-time, 70%+, with no years stated. These never start an alert by themselves; they are listed with the next alert, if one goes out within 24 hours of their posting.
 
 The work mode in the mail name and in the tables is read from the posting's own words ("Work mode: Hybrid", "work from office", "(Remote)" in the title). LinkedIn's public pages have no work-mode field, so when the posting does not say, the alert says `work mode not stated`.
 

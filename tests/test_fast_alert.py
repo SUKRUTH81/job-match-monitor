@@ -75,17 +75,23 @@ CLASSES = [
     ("India-remote, not Hyderabad -> out", job(10, location="India", workplace_type="Remote"), ""),
     ("internship -> out", job(10, employment_type="Internship"), ""),
     ("contract -> out", job(10, employment_type="Contract"), ""),
-    ("below 80% -> out", job(10, description="2-4 years of experience in Python, Java, Spring, Kubernetes, AWS, Kafka, Angular."), ""),
+    ("below 70% -> out", job(10, description="2-4 years of experience in Python, Java, Spring, Kubernetes, AWS, Kafka, Angular."), ""),
     ("Senior title with no years -> out", job(10, title="Senior Python Developer", description=NO_YEARS), ""),
     ("Java role -> out", job(10, title="Java Developer"), ""),
 ]
 for name, record, expected in CLASSES:
-    got = m.fast_alert_class(record, candidate_yoe=2.0, min_match=80)
+    got = m.fast_alert_class(record, candidate_yoe=2.0, min_match=70)
     check(f"class: {name}", got == expected, f"expected {expected!r}, got {got!r} ({record.get('skill_match_pct')}%, {m.rejection_reason(dict(record))!r})")
-seventy = job(11, description="2-4 years of experience in Python, Django, React, PostgreSQL, Docker, Git, Redis, AWS, Kubernetes, Kafka.")
+seventy = job(11, description="2-4 years of experience in Python, Django, React, PostgreSQL, Docker, Git, Redis, AWS, Terraform, Kafka.")
 check("70% is an alert at --fast-min-match 70, not at 80",
       m.fast_alert_class(dict(seventy), min_match=70) == "alert" and m.fast_alert_class(dict(seventy), min_match=80) == "",
       str(m.score_job(dict(seventy))["skill_match_pct"]))
+check("a job at exactly 70% alerts with the default threshold", m.fast_alert_class(dict(seventy)) == "alert", str(m.FAST_ALERT_MIN_MATCH))
+# The workflow passes its own number to --fast-min-match, so it has to agree with the script.
+WORKFLOW = (Path(m.__file__).resolve().parent / ".github" / "workflows" / "hyderabad-fast-alert.yml").read_text(encoding="utf-8")
+check("the workflow uses the same threshold as the script",
+      WORKFLOW.count(f"inputs.min_match || '{m.FAST_ALERT_MIN_MATCH}'") == 2 and f"default: '{m.FAST_ALERT_MIN_MATCH}'" in WORKFLOW,
+      f"script default {m.FAST_ALERT_MIN_MATCH}")
 
 check("name: one mode", m.fast_alert_name([{"workplace_type": "Hybrid"}]) == "Hyderabad (Hybrid) jobs apply fast", m.fast_alert_name([{"workplace_type": "Hybrid"}]))
 mixed = m.fast_alert_name([{"workplace_type": m.WORK_MODE_UNKNOWN}, {"workplace_type": "On-site"}, {"workplace_type": "Hybrid"}, {"workplace_type": "On-site"}])
@@ -100,7 +106,7 @@ class Args:
     proxy = None
     keywords = None
     candidate_yoe = 2.0
-    fast_min_match = 80
+    fast_min_match = 70
     dry_run = False
     watch_minutes = 0.0
     interval_minutes = 5.0
@@ -204,7 +210,7 @@ outcome.update(mail=True)
 # The watcher as the workflow starts it.
 clear()
 listing[:] = [job(600, title="AI Engineer", description=f"This is an on-site role. 1-3 years of experience in {STACK}", company="Cli Ltd")]
-sys.argv = ["job_match_runner.py", "--fast-alert", "--source", "guest", "--candidate-yoe", "2.0", "--fast-min-match", "80", "--watch-minutes", "0"]
+sys.argv = ["job_match_runner.py", "--fast-alert", "--source", "guest", "--candidate-yoe", "2.0", "--fast-min-match", "70", "--watch-minutes", "0"]
 code = m.run()
 check("--fast-alert: exit 0 and one alert", code == 0 and len(sent["mail"]) == 1, f"{code} {len(sent['mail'])}")
 check("--fast-alert: subject carries the work mode", sent["mail"] and sent["mail"][0][0] == "Hyderabad (On-site) jobs apply fast", str([s[0] for s in sent["mail"]]))

@@ -156,6 +156,8 @@ CANDIDATE_SKILLS = {
     # Backend, data, and asynchronous processing
     "microservices", "websockets", "rabbitmq", "celery", "postgresql",
     "sql server", "mongodb", "redis",
+    # Added at the candidate's request: Kubernetes, and every SQL dialect (not only the ones in the resume)
+    "kubernetes", "mysql", "sqlite", "mariadb", "oracle sql",
     # Security, delivery, and engineering tools
     "jwt", "rbac", "session management", "multi-tenant", "api security",
     "burp suite", "docker", "nginx", "ci/cd", "git", "github", "postman",
@@ -203,6 +205,10 @@ SKILL_PATTERNS: Dict[str, Tuple[str, ...]] = {
     "postgresql": (r"\bpostgres(?:ql)?\b",),
     "sql server": (r"\bsql server\b", r"\bmssql\b"),
     "mysql": (r"\bmysql\b",),
+    "sqlite": (r"\bsqlite\d?\b",),
+    "mariadb": (r"\bmariadb\b",),
+    # Oracle as a SQL database. Oracle's business applications are the separate "oracle" entry below.
+    "oracle sql": (r"\boracle\s+(?:db|database|sql)\b", r"\bpl\s*/?\s*sql\b"),
     "mongodb": (r"\bmongodb\b",),
     "redis": (r"\bredis\b",),
     "rabbitmq": (r"\brabbitmq\b",),
@@ -262,7 +268,7 @@ SKILL_PATTERNS: Dict[str, Tuple[str, ...]] = {
     "snowflake": (r"\bsnowflake\b",),
     "databricks": (r"\bdatabricks\b",),
     "airflow": (r"\bairflow\b",),
-    "oracle": (r"\boracle\s+(?:db|database|sql|apex|ebs|fusion|cloud)\b", r"\bpl\s*/?\s*sql\b"),
+    "oracle": (r"\boracle\s+(?:apex|ebs|fusion|cloud)\b",),
     "elasticsearch": (r"\belasticsearch\b",),
     "cassandra": (r"\bcassandra\b",),
     "dynamodb": (r"\bdynamodb\b",),
@@ -809,6 +815,9 @@ def role_mismatch(job: Dict[str, Any]) -> str:
     return ""
 
 
+SQL_ENGINES = ("postgresql", "sql server", "mysql", "sqlite", "mariadb", "oracle sql")
+
+
 def canonical_skill_hits(text: str) -> List[str]:
     blob = (text or "").lower()
     hits = []
@@ -816,7 +825,7 @@ def canonical_skill_hits(text: str) -> List[str]:
         if any(re.search(pattern, blob, re.I) for pattern in patterns):
             hits.append(skill)
     # Collapse broad SQL when a more specific SQL engine is identified.
-    if "postgresql" in hits or "sql server" in hits or "mysql" in hits:
+    if any(engine in hits for engine in SQL_ENGINES):
         hits = [x for x in hits if x != "sql"]
     return sorted(set(hits))
 
