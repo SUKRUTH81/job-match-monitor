@@ -953,8 +953,11 @@ def _parse_linkedin_age(raw: Any) -> float | None:
     text = re.sub(r"^(?:posted|reposted)\s+", "", text)
     if re.search(r"\b(?:just now|moments ago|right now)\b", text):
         return 0.0
+    # "30+ days ago" and "1 month ago" must be read too: a label that is not understood counts as
+    # "age unknown", and a posting of unknown age used to be taken for one posted just now.
     match = re.search(
-        r"\b(\d+(?:\.\d+)?)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w)\s*(?:ago)?\b",
+        r"\b(\d+(?:\.\d+)?)\s*\+?\s*"
+        r"(seconds?|secs?|s|minutes?|mins?|months?|mos?|m|hours?|hrs?|h|days?|d|weeks?|wks?|w|years?|yrs?|y)\s*(?:ago)?\b",
         text,
         re.I,
     )
@@ -970,6 +973,10 @@ def _parse_linkedin_age(raw: Any) -> float | None:
         return amount
     if unit.startswith("day") or unit == "d":
         return amount * 24.0
+    if unit.startswith("mo"):
+        return amount * 730.0
+    if unit.startswith("y"):
+        return amount * 8760.0
     return amount * 168.0
 
 
@@ -1510,6 +1517,29 @@ def _search_budget_seconds() -> float:
 SEARCH_STATS: Dict[str, int] = {"pages": 0, "failed": 0}
 
 
+_JOB_URN_RE = re.compile(r"jobPosting:(\d{6,20})")
+
+
+def _card_job_id(card: Any, href: str) -> str:
+    """LinkedIn's id for one search-result card.
+
+    The card names it outright (data-entity-urn="urn:li:jobPosting:4471386121"). Failing that, it is
+    the number that ends the link, ".../python-developer-at-acme-4471386121". Taking the first long
+    number in the link was wrong for a title that carries one ("Engineer - Req 31001234").
+    """
+    holders = [card, *card.find_all(attrs={"data-entity-urn": True})] if hasattr(card, "find_all") else []
+    for holder in holders:
+        urn = _JOB_URN_RE.search(str(holder.get("data-entity-urn") or ""))
+        if urn:
+            return urn.group(1)
+    path = str(href or "").split("?")[0].split("#")[0].rstrip("/")
+    last = re.search(r"(\d{6,20})$", path)
+    if last:
+        return last.group(1)
+    numbers = re.findall(r"\d{8,12}", path)
+    return numbers[-1] if numbers else path.split("-")[-1].split("/")[-1]
+
+
 def scrape_linkedin_guest_jobs(
     hours: float,
     target_count: int,
@@ -1649,10 +1679,7 @@ def scrape_linkedin_guest_jobs(
                             company = co_el.get_text(" ", strip=True) if co_el else "Unknown Company"
                             job_loc = lo_el.get_text(" ", strip=True) if lo_el else query_loc
 
-                            raw_href = li_el.get("href", "")
-                            clean_href = raw_href.split("?")[0]
-                            m = re.search(r"(\d{8,12})", clean_href)
-                            job_id = m.group(1) if m else clean_href.split("-")[-1].split("/")[-1]
+                            job_id = _card_job_id(card, li_el.get("href", ""))
 
                             if not job_id or job_id in seen_ids:
                                 continue
@@ -2446,17 +2473,17 @@ def issue_owner() -> str:
     return ""
 
 
-def build_github_issue_body(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[str, Any]]) -> str:
+def build_github_issue_body(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[str, Any]], min_match: int = 60) -> str:
     run_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
     owner = issue_owner()
     mention_header = f"cc @{owner}\n\n" if owner else ""
     easy_count = sum(1 for j in matched if j.get("is_easy_apply"))
     normal_count = len(matched) - easy_count
-    ratio_str = f"**Apply Mix (60%+ Matches):** ⚡ {easy_count} Easy Apply ({round(easy_count/len(matched)*100) if matched else 0}%) | 🔗 {normal_count} Normal Apply\n\n"
+    ratio_str = f"**Apply Mix ({min_match}%+ Matches):** ⚡ {easy_count} Easy Apply ({round(easy_count/len(matched)*100) if matched else 0}%) | 🔗 {normal_count} Normal Apply\n\n"
     return f"""# Job Match Report\n\n{mention_header}**Run time:** {run_time}  
 **Skill score:** {SCORE_EXPLANATION}
 **Filters:** Full-time only | Hyderabad, Bengaluru, Chennai & India Remote | Python developer roles only (Java, .NET and other stacks removed) | one opening posted in several cities is shown once
-**Notification rule:** this issue is created only when at least one new job scores 60% or higher.\n\n{ratio_str}## 1. Jobs matching 60% or more ({len(matched)})\n\nSorted by match percentage and Easy Apply priority.\n\n{markdown_table(matched)}\n\n## 2. All newly discovered jobs scraped ({len(all_scraped)})\n\nIncludes every new unique job collected in this run, including jobs below 60%. Sorted highest first.\n\n{markdown_table(all_scraped)}\n\n---\nPlease verify eligibility and posting details on the employer's application page.\n"""
+**Notification rule:** this issue is created only when at least one new job scores {min_match}% or higher.\n\n{ratio_str}## 1. Jobs matching {min_match}% or more ({len(matched)})\n\nSorted by match percentage and Easy Apply priority.\n\n{markdown_table(matched)}\n\n## 2. All newly discovered jobs scraped ({len(all_scraped)})\n\nIncludes every new unique job collected in this run, including jobs below {min_match}%. Sorted highest first.\n\n{markdown_table(all_scraped)}\n\n---\nPlease verify eligibility and posting details on the employer's application page.\n"""
 
 
 def create_github_issue(title: str, body: str) -> str:
@@ -2615,6 +2642,7 @@ def build_email_html(
     unchecked: Sequence[Dict[str, Any]] = (),
     removed: Sequence[Tuple[Dict[str, Any], str]] = (),
     scan_summary: str = "",
+    min_match: int = 60,
 ) -> str:
     run_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
     return f"""<!doctype html><html><body style="font-family:Arial,sans-serif;color:#202124">
@@ -2623,11 +2651,11 @@ def build_email_html(
     {scan_summary}
     <p>Only developer roles that use Python are listed (Java, .NET and other stacks are removed); one opening posted in several cities is shown once.</p>
     <p>{SCORE_EXPLANATION}</p>
-    <h3>1. Jobs matching 60% or more ({len(matched)})</h3>
+    <h3>1. Jobs matching {min_match}% or more ({len(matched)})</h3>
     <p>Sorted by skill match percentage, highest first.</p>
     {html_table(matched)}
     <h3 style="margin-top:28px">2. All newly discovered jobs scraped ({len(all_scraped)})</h3>
-    <p>This table includes every new job collected in this run, including jobs below 60%. Sorted highest first.</p>
+    <p>This table includes every new job collected in this run, including jobs below {min_match}%. Sorted highest first.</p>
     {html_table(all_scraped)}
     {unchecked_jobs_html(unchecked)}
     {removed_jobs_html(removed)}
@@ -2740,7 +2768,7 @@ def send_gmail(subject: str, html_body: str, attachment: Path | None = None) -> 
     return False
 
 
-def create_excel(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[str, Any]]) -> Path:
+def create_excel(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[str, Any]], min_match: int = 60) -> Path:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.utils import get_column_letter
@@ -2751,7 +2779,7 @@ def create_excel(matched: Sequence[Dict[str, Any]], all_scraped: Sequence[Dict[s
     wb = Workbook()
     wb.remove(wb.active)
     columns = ["Match %", "Apply Type", "Job Title", "Company", "Location", "Workplace", "Posted", "Min Experience", "Matched Skills", "Missing Skills", "Job URL"]
-    for sheet_name, data in (("60%+ Matches", matched), ("All Scraped", all_scraped)):
+    for sheet_name, data in ((f"{min_match}%+ Matches", matched), ("All Scraped", all_scraped)):
         ws = wb.create_sheet(sheet_name)
         ws.append(columns)
         for cell in ws[1]:
@@ -3257,7 +3285,7 @@ def main() -> int:
             save_seen_ids(seen_ids)
             send_push_notification(
                 f"LinkedIn Scan at {run_stamp}: 0 Matches",
-                f"Scan finished: Evaluated {len(collected)} fresh LinkedIn jobs. No matching roles found in the 1h window.",
+                f"Scan finished: Evaluated {len(collected)} fresh LinkedIn jobs. No matching roles found in the last {args.hours:g} hour(s).",
                 priority="default",
             )
             # Every run sends a mail, so a quiet hour is distinguishable from a run that never happened.
@@ -3272,9 +3300,9 @@ def main() -> int:
     matched.sort(key=lambda j: (int(j.get("skill_match_pct", 0)), 1 if j.get("is_easy_apply") else 0, str(j.get("title", "")).lower()), reverse=True)
     all_scraped = sorted(jobs_to_report, key=lambda j: (int(j.get("skill_match_pct", 0)), 1 if j.get("is_easy_apply") else 0, str(j.get("title", "")).lower()), reverse=True)
 
-    report_path = create_excel(matched, all_scraped)
+    report_path = create_excel(matched, all_scraped, args.min_match)
     if new_jobs:
-        title = f"LinkedIn job matches: {len(matched)} at 60%+ | {run_stamp}"
+        title = f"LinkedIn job matches: {len(matched)} at {args.min_match}%+ | {run_stamp}"
     else:
         title = f"LinkedIn job scan: nothing new, {len(matched)} earlier match(es) still open | {run_stamp}"
 
@@ -3290,15 +3318,15 @@ def main() -> int:
     elif not matched:
         LOG.info("LinkedIn jobs were found, but none reached %d%%. Excel report created; no GitHub Issue.", args.min_match)
         send_push_notification(
-            f"LinkedIn Scan at {run_stamp}: 0 Matches at 60%+",
-            f"Scanned {len(all_scraped)} roles in the 1h window. None reached the {args.min_match}% skill threshold.",
+            f"LinkedIn Scan at {run_stamp}: 0 Matches at {args.min_match}%+",
+            f"Scanned {len(all_scraped)} roles from the last {args.hours:g} hour(s). None reached the {args.min_match}% skill threshold.",
             priority="default",
         )
     else:
-        issue_url = create_github_issue(title, build_github_issue_body(matched, all_scraped))
+        issue_url = create_github_issue(title, build_github_issue_body(matched, all_scraped, args.min_match))
         top_job = matched[0]
         easy_tag = " [⚡ Easy Apply]" if top_job.get("is_easy_apply") else ""
-        push_msg = f"{len(matched)} match(es) >=60%! Top: {top_job.get('title')} at {top_job.get('company')} ({int(top_job.get('skill_match_pct', 0))}%) in {top_job.get('location')}{easy_tag}"
+        push_msg = f"{len(matched)} match(es) >={args.min_match}%! Top: {top_job.get('title')} at {top_job.get('company')} ({int(top_job.get('skill_match_pct', 0))}%) in {top_job.get('location')}{easy_tag}"
         send_push_notification(title, push_msg, click_url=issue_url or top_job.get("job_url", ""), priority="high")
 
     # Send email notification (to akhilarohithayepuri@gmail.com) with attached Excel report
@@ -3308,7 +3336,7 @@ def main() -> int:
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
     mailed = send_gmail(
         title,
-        build_email_html(matched, all_scraped, unchecked, removed, scan_summary_html(reason_counts, args.hours)),
+        build_email_html(matched, all_scraped, unchecked, removed, scan_summary_html(reason_counts, args.hours), min_match=args.min_match),
         attachment=report_path,
     )
 

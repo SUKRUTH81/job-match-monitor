@@ -144,6 +144,7 @@ Committing `data/linkedin_jobs.json` to the default branch triggers a run. The s
    - Free, zero-setup, instant lock-screen push alerts with sound.
    - Install the free **ntfy** app from Google Play Store or Apple App Store (or open [https://ntfy.sh/sukruth_job_alerts](https://ntfy.sh/sukruth_job_alerts) in any browser).
    - Subscribe to topic: `sukruth_job_alerts`.
+   - That topic name is public: anyone who knows it can read the alerts or send one. To make it private, pick a long random name, add it as the repository secret `NTFY_TOPIC` (**Settings → Secrets and variables → Actions**), and subscribe to that name in the ntfy app instead. Both workflows use the secret when it is set.
    - Whenever matching roles are found, your phone buzzes with an instant notification containing the job title, company, match score, Easy Apply tag, and clickable link!
 2. **GitHub Mobile Push Notifications:**
    - Install the GitHub Mobile app on your phone and enable notifications.

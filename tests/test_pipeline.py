@@ -127,11 +127,85 @@ for var in ("ISSUE_OWNER", "GITHUB_REPOSITORY_OWNER", "GITHUB_ACTOR", "GITHUB_TO
     os.environ.pop(var, None)
 
 
+# --- 2c. search-result cards: posting age and job id ------------------------------------------------
+AGES = [
+    ("35 minutes ago", 35 / 60), ("2 hours ago", 2.0), ("1 day ago", 24.0), ("2 weeks ago", 336.0),
+    ("1 month ago", 730.0), ("3 months ago", 2190.0), ("Reposted 1 month ago", 730.0), ("1 year ago", 8760.0),
+    ("30+ days ago", 720.0), ("5m", 5 / 60), ("2mo", 1460.0), ("just now", 0.0),
+]
+for label, expected in AGES:
+    got = m._parse_linkedin_age(label)
+    check(f"age label {label!r}", got is not None and abs(got - expected) < 0.01, f"expected {expected}, got {got}")
+check("age label that says nothing -> unknown", m._parse_linkedin_age("Be an early applicant") is None)
+
+
+def card_html(job_id, title, slug, posted, urn=True):
+    urn_attr = f' data-entity-urn="urn:li:jobPosting:{job_id}"' if urn else ""
+    return (
+        f'<li><div class="base-card job-search-card"{urn_attr}>'
+        f'<a class="base-card__full-link" href="https://in.linkedin.com/jobs/view/{slug}-{job_id}?position=1&amp;pageNum=0"></a>'
+        f'<h3 class="base-search-card__title">{title}</h3><h4 class="base-search-card__subtitle">Acme</h4>'
+        f'<span class="job-search-card__location">Hyderabad, Telangana, India</span>'
+        f'<time class="job-search-card__listdate" datetime="2020-01-01">{posted}</time></div></li>'
+    )
+
+
+def first_card(markup):
+    return m.BeautifulSoup(markup, "html.parser").find("li")
+
+
+with_urn = first_card(card_html("4471386121", "Software Engineer - Req 31001234", "software-engineer-req-31001234-at-acme", "5 minutes ago"))
+without_urn = first_card(card_html("4471386122", "Python Developer JR10012345", "python-developer-jr10012345-at-acme", "5 minutes ago", urn=False))
+check("job id: taken from the card, not from a number in the title", m._card_job_id(with_urn, with_urn.find("a")["href"]) == "4471386121",
+      m._card_job_id(with_urn, with_urn.find("a")["href"]))
+check("job id: without the card attribute, the number that ends the link", m._card_job_id(without_urn, without_urn.find("a")["href"]) == "4471386122",
+      m._card_job_id(without_urn, without_urn.find("a")["href"]))
+check("job id: canonical link", m._card_job_id(without_urn, "https://www.linkedin.com/jobs/view/4471386123/?trk=x") == "4471386123")
+
+PAGE = (
+    card_html("4471386121", "Software Engineer - Req 31001234", "software-engineer-req-31001234-at-acme", "12 minutes ago")
+    + card_html("4471386122", "Python Developer JR10012345", "python-developer-jr10012345-at-acme", "40 minutes ago", urn=False)
+    + card_html("4471386123", "Python Developer", "python-developer-at-acme", "1 month ago")
+    + card_html("4471386124", "Backend Developer", "backend-developer-at-acme", "30+ days ago")
+)
+
+
+class FakeResponse:
+    status_code = 200
+    headers = {}
+
+    def __init__(self, text):
+        self.text = text
+
+
+class FakeSession:
+    proxies = {}
+
+    def get(self, url, **kwargs):
+        # Cards on the first page of the "Normal Apply" pass only.
+        return FakeResponse(PAGE if "f_AL=true" not in url and url.endswith("start=0") else "")
+
+
+real_session, real_sleep = m.requests.Session, m.time.sleep
+m.requests.Session, m.time.sleep = FakeSession, lambda seconds: None
+try:
+    scraped = m.scrape_linkedin_guest_jobs(hours=1, target_count=0, delay=0, keywords_list=["Python Developer"],
+                                           locations_list=["Hyderabad"], empty_pages_to_stop=1)
+finally:
+    m.requests.Session, m.time.sleep = real_session, real_sleep
+check("search page: both fresh cards kept under their own ids", [j["job_id"] for j in scraped] == ["4471386121", "4471386122"],
+      str([j["job_id"] for j in scraped]))
+check("search page: a month-old card is not taken for a new posting", not any(j["job_id"] in ("4471386123", "4471386124") for j in scraped),
+      str([(j["job_id"], j["freshness_badge"]) for j in scraped]))
+check("search page: link goes to the card's own job", scraped and scraped[0]["job_url"] == "https://www.linkedin.com/jobs/view/4471386121/",
+      str(scraped[:1] and scraped[0]["job_url"]))
+
+
 # --- 3. main(): which notifications fire ---------------------------------------------------------
 real_send_gmail = m.send_gmail
 
 
-def run_main(collected, crash=False, mail_ok=True, seen=()):
+def run_main(collected, crash=False, mail_ok=True, seen=(), extra_args=()):
     sent = {"mail": [], "push": [], "issue": []}
     m.send_gmail = lambda subject, body, attachment=None: (sent["mail"].append((subject, body, attachment)), mail_ok)[1]
     m.send_push_notification = lambda *a, **k: sent["push"].append(a) or True
@@ -145,7 +219,7 @@ def run_main(collected, crash=False, mail_ok=True, seen=()):
         m.collect_jobs = boom
     else:
         m.collect_jobs = lambda **kwargs: [dict(j) for j in collected]
-    sys.argv = ["job_match_runner.py", "--hours", "1"]
+    sys.argv = ["job_match_runner.py", "--hours", "1", *extra_args]
     try:
         code = m.run()
     except RuntimeError as exc:
@@ -192,6 +266,23 @@ code, sent = run_main([good], mail_ok=False)
 check("mail undeliverable (report): run exits 1", code == 1, str(code))
 code, sent = run_main([], mail_ok=False)
 check("mail undeliverable (status): run exits 1", code == 1, str(code))
+
+# The numbers in the report text are the ones the run was started with.
+code, sent = run_main([good], extra_args=["--min-match", "40", "--hours", "3"])
+subject, body, attachment = sent["mail"][0] if sent["mail"] else ("", "", None)
+check("--min-match 40: subject, mail, push and issue title say 40%, not 60%",
+      "at 40%+" in subject and "matching 40% or more" in body and "60%" not in subject + body
+      and all("60%" not in str(text) for text in sent["push"] + sent["issue"]),
+      f"{subject} | {sent['push']} | {sent['issue']}")
+issue_text = m.build_github_issue_body([], [], 75)
+check("issue body follows the threshold", "75% or higher" in issue_text and "matching 75% or more" in issue_text and "60%" not in issue_text)
+check("defaults still read 60%", "matching 60% or more" in m.build_email_html([], []) and "matching 60% or more" in m.build_github_issue_body([], []))
+code, sent = run_main([senior], extra_args=["--hours", "3"])
+check("--hours 3: the push says 3 hours, not 1h", sent["push"] and "last 3 hour(s)" in str(sent["push"][0]) and "1h" not in str(sent["push"][0]), str(sent["push"]))
+
+HOURLY = (Path(repo_dir) / ".github" / "workflows" / "hourly-job-monitor.yml").read_text(encoding="utf-8")
+save_step = HOURLY.split("- name: Save seen-job history", 1)[1].split("- name:", 1)[0]
+check("hourly workflow: history is saved after a failed run too", "!cancelled()" in save_step and "success()" not in save_step, save_step.strip()[:200])
 
 
 # --- 4. send_gmail itself, against a fake SMTP server ---------------------------------------------

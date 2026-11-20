@@ -172,6 +172,9 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           JOB_ALERT_TO: ${{ secrets.JOB_ALERT_TO || 'sukruth1435@gmail.com, akhilarohithayepuri@gmail.com' }}
+          # Phone push (ntfy.sh). Set the NTFY_TOPIC secret to a private, hard-to-guess name; while it
+          # is not set the script uses its built-in public topic.
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           # Inputs go through the environment, not straight into the script text, so a
           # keyword with spaces ("AI Engineer") stays one argument.
           INPUT_HOURS: ${{ inputs.hours || '1' }}
@@ -190,7 +193,9 @@ jobs:
           python job_match_runner.py "${ARGS[@]}"
 
       - name: Save seen-job history
-        if: success()
+        # Also after a run that failed (its mail could not be sent, say): the issue and the push have
+        # gone out by then, and without the history the next run would report the same jobs again.
+        if: ${{ !cancelled() && hashFiles('data/seen_job_ids.json') != '' }}
         uses: actions/cache/save@v4
         with:
           path: data/seen_job_ids.json
