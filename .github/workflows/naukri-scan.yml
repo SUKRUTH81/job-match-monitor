@@ -1,9 +1,13 @@
 name: Naukri Scan
 
 # Reads Naukri's public job search and mails each new opening once. No Naukri account is used and
-# nothing is signed in to: a real browser on this runner opens the public search pages a visitor
-# sees. It solves no CAPTCHA; if Naukri refuses the browser, the run fails and says so.
+# nothing is signed in to: a real browser on this runner opens one public search page a visitor
+# sees. It solves no CAPTCHA; if Naukri refuses the browser, that hour is skipped and nothing is
+# retried (six refused runs in a row fail the run).
 # All requests come from this GitHub runner, never from the candidate's own computer.
+#
+# Each run reads ONE search page (the 20 newest postings of the last day). Eight searches take
+# turns by the hour: Python developer and AI engineer, in Hyderabad, Bengaluru, Chennai and remote.
 #
 # A mail (and a phone push) goes out when a new opening is all of:
 #   - in Hyderabad, Bengaluru or Chennai, or remote,
@@ -25,6 +29,10 @@ on:
         description: 'Skill match needed, in percent (default 60)'
         required: false
         default: '60'
+      turn:
+        description: 'Which of the eight searches to read, 0-7 (empty = the one whose turn it is this hour)'
+        required: false
+        default: ''
       dry_run:
         description: 'Scan and log only: send nothing, remember nothing'
         type: boolean
@@ -85,8 +93,12 @@ jobs:
           INPUT_CANDIDATE_YOE: ${{ inputs.candidate_yoe || '2.0' }}
           INPUT_MIN_MATCH: ${{ inputs.min_match || '60' }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_TURN: ${{ inputs.turn }}
         run: |
           ARGS=(--candidate-yoe "$INPUT_CANDIDATE_YOE" --min-match "$INPUT_MIN_MATCH")
+          if [ -n "$INPUT_TURN" ]; then
+            ARGS+=(--turn "$INPUT_TURN")
+          fi
           if [ "$INPUT_DRY_RUN" = "true" ]; then
             ARGS+=(--dry-run)
           fi
