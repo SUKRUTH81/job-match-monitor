@@ -7,7 +7,8 @@ name: Hourly Timer
 #   1. the `tick` job waits 55 minutes in the `hourly-timer` environment
 #      (an environment wait timer - no runner is used while waiting),
 #   2. sleeps the last few minutes until minute TARGET_MINUTE (UTC),
-#   3. starts the job monitor and the company career-site scan, then starts the next link of the chain.
+#   3. starts the job monitor, the company career-site scan and the Naukri scan, then starts the next
+#      link of the chain.
 #
 # timer-watchdog.yml restarts the chain if it ever stops.
 # To stop the hourly runs: cancel the waiting "Hourly Timer" run and disable
@@ -28,6 +29,7 @@ env:
   TARGET_MINUTE: '30'
   MONITOR_WORKFLOW: hourly-job-monitor.yml
   PORTALS_WORKFLOW: company-portals.yml
+  NAUKRI_WORKFLOW: naukri-scan.yml
   TIMER_WORKFLOW: hourly-timer.yml
   WATCHDOG_WORKFLOW: timer-watchdog.yml
 
@@ -79,13 +81,15 @@ jobs:
           echo "::error::Could not start the job monitor."
           exit 1
 
-      - name: Start the company career-site scan
-        # A second, separate report (company-portals.yml). Whatever happens here, the chain goes on.
+      - name: Start the company career-site scan and the Naukri scan
+        # Two more, separate reports (company-portals.yml, naukri-scan.yml). Whatever happens here, the chain goes on.
         if: always() && steps.dedupe.outputs.duplicate != 'true'
         continue-on-error: true
         run: |
           gh workflow run "$PORTALS_WORKFLOW" --repo "$REPO" --ref "$REF" \
             || echo "::warning::Could not start the company career-site scan this hour."
+          gh workflow run "$NAUKRI_WORKFLOW" --repo "$REPO" --ref "$REF" \
+            || echo "::warning::Could not start the Naukri scan this hour."
 
       - name: Start the next chain link
         # Runs even if starting the monitor failed, so the chain never breaks.

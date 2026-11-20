@@ -388,11 +388,23 @@ NOT_COVERED = {
     "Cimpress": "its career site (cimpress.ripplehire.com) answers with an empty job list",
 }
 
+# The words and the state file of this scan. Another scan that reuses run_scan() brings its own
+# (naukri_scan.py does).
+COMPANY_SITES: Dict[str, Any] = {
+    "name": "Company career sites",
+    "short": "Company sites",
+    "read_from": "Read from the companies' own career sites: {sites}.",
+    "footer": 'Automated report from the company-site scan, which runs every hour. "Posted" is the date the career site shows.',
+    "preview": "company_portals_preview.html",
+    "not_covered": NOT_COVERED,
+    "state_file": None,  # None = STATE_FILE
+}
+
 
 # ---------------------------------------------------------------------------
 # State, judging and the mail
 # ---------------------------------------------------------------------------
-def load_state() -> Dict[str, Any]:
+def load_state(path: Any = None) -> Dict[str, Any]:
     """decided : {job id: when last seen} - postings already judged, so they are not judged or opened again
     reported: {job id or "k:" + fingerprint: when} - openings already mailed
     queue   : openings that qualify and have not been mailed yet
@@ -401,18 +413,18 @@ def load_state() -> Dict[str, Any]:
     """
     state: Dict[str, Any] = {"decided": {}, "reported": {}, "queue": [], "held": [], "failures": {}}
     try:
-        payload = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        payload = json.loads((path or STATE_FILE).read_text(encoding="utf-8"))
         for key, kind in (("decided", dict), ("reported", dict), ("queue", list), ("held", list), ("failures", dict)):
             if isinstance(payload.get(key), kind):
                 state[key] = payload[key]
     except FileNotFoundError:
         pass
     except (OSError, ValueError, AttributeError) as exc:
-        LOG.warning("Could not read the company-site state; starting empty: %s", exc)
+        LOG.warning("Could not read the scan state; starting empty: %s", exc)
     return state
 
 
-def save_state(state: Dict[str, Any]) -> None:
+def save_state(state: Dict[str, Any], path: Any = None) -> None:
     core.DATA_DIR.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc)
 
@@ -422,7 +434,7 @@ def save_state(state: Dict[str, Any]) -> None:
 
     state["decided"] = newer_than(state["decided"], DECIDED_DAYS)
     state["reported"] = newer_than(state["reported"], REPORTED_DAYS)
-    STATE_FILE.write_text(json.dumps({**state, "updated_at": now.isoformat()}, ensure_ascii=False), encoding="utf-8")
+    (path or STATE_FILE).write_text(json.dumps({**state, "updated_at": now.isoformat()}, ensure_ascii=False), encoding="utf-8")
 
 
 _RECORD_FIELDS = (
@@ -445,26 +457,29 @@ def _ids(record: Dict[str, Any]) -> List[str]:
 
 
 BELOW_MATCH = "No experience stated and skill match too low"
+BELOW_STATED_MATCH = "Skill match too low"
 
 
-def judge(job: Dict[str, Any], candidate_yoe: float, min_match: int = 60) -> Tuple[str, str]:
+def judge(job: Dict[str, Any], candidate_yoe: float, min_match: int = 60, stated_min_match: int = 0) -> Tuple[str, str]:
     """('match' | 'no_yoe' | '', reason it was dropped) for one posting whose description has been read.
 
-    match  : passes every filter of the hourly report and states experience that includes candidate_yoe.
+    match  : passes every filter of the hourly report, states experience that includes candidate_yoe,
+             and scores stated_min_match or more (0 = any score).
     no_yoe : passes every filter and scores min_match or more, but states no experience at all.
     """
     reason = core.rejection_reason(job, candidate_yoe=candidate_yoe)
     if reason:
         return "", reason
     core.score_job(job)
+    score = int(job.get("skill_match_pct", 0))
     if core.experience_is_stated(job):
-        return "match", ""
-    return ("no_yoe", "") if int(job.get("skill_match_pct", 0)) >= min_match else ("", BELOW_MATCH)
+        return ("match", "") if score >= stated_min_match else ("", BELOW_STATED_MATCH)
+    return ("no_yoe", "") if score >= min_match else ("", BELOW_MATCH)
 
 
-def scan_site(key: str, state: Dict[str, Any], args: argparse.Namespace, now_iso: str) -> Dict[str, Any]:
+def scan_site(key: str, state: Dict[str, Any], args: argparse.Namespace, now_iso: str, portals: Any = None) -> Dict[str, Any]:
     """Read one career site and judge the postings not judged before."""
-    name, reader = PORTALS[key]
+    name, reader = (portals or PORTALS)[key]
     site = Site(args.keyword_list)
     listing = reader(site)
     summary: Dict[str, Any] = {"listed": len(listing), "new": 0, "waiting": 0, "candidates": [], "reasons": {}}
@@ -492,7 +507,7 @@ def scan_site(key: str, state: Dict[str, Any], args: argparse.Namespace, now_iso
             summary["waiting"] += 1
             continue
         state["decided"][job_id] = now_iso
-        kind, reason = ("", early) if early else judge(job, args.candidate_yoe, args.min_match)
+        kind, reason = ("", early) if early else judge(job, args.candidate_yoe, args.min_match, getattr(args, "stated_min_match", 0))
         summary["reasons"][reason or kind] = summary["reasons"].get(reason or kind, 0) + 1
         if kind:
             job["portal_class"] = kind
@@ -520,7 +535,11 @@ def build_mail(
     notes: Sequence[str],
     covered: Sequence[str],
     min_match: int = 60,
+    report: Dict[str, Any] | None = None,
+    stated_min_match: int = 0,
 ) -> str:
+    report = report or COMPANY_SITES
+    floor = f", at a skill match of {stated_min_match}% or more" if stated_min_match else ""
     run_time = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y, %I:%M %p IST")
     none = '<p style="color:#666;margin:8px 0 18px">None new since the last mail.</p>'
     notes_html = (
@@ -528,10 +547,10 @@ def build_mail(
         if notes else ""
     )
     return f"""<!doctype html><html><body style="font-family:Arial,sans-serif;color:#202124">
-    <h2>Company career sites: new jobs for your experience</h2>
+    <h2>{html.escape(report["name"])}: new jobs for your experience</h2>
     <p>Run time: <b>{run_time}</b></p>
-    <p>Read from the companies' own career sites: {html.escape(', '.join(covered))}.</p>
-    <p>Every job in table 1 is {html.escape(rule_text(candidate_yoe))}. The years are stated in the posting.</p>
+    <p>{html.escape(report["read_from"].format(sites=', '.join(covered)))}</p>
+    <p>Every job in table 1 is {html.escape(rule_text(candidate_yoe))}{floor}. The years are stated in the posting.</p>
     <h3>1. New openings for your experience ({len(matches)})</h3>
     <p>Sorted by skill match, highest first. Each opening is mailed once.</p>
     {core.html_table(matches) if matches else none}
@@ -542,8 +561,8 @@ def build_mail(
     {core.html_table(held) if held else none}
     <p>{core.SCORE_EXPLANATION}</p>
     {notes_html}
-    <p style="font-size:11px;color:#666;margin-top:22px">Automated report from the company-site scan, which runs every hour.
-    "Posted" is the date the career site shows. Verify the requirements on the employer's page.</p>
+    <p style="font-size:11px;color:#666;margin-top:22px">{html.escape(report["footer"])}
+    Verify the requirements on the employer's page.</p>
     </body></html>"""
 
 
@@ -551,22 +570,29 @@ def _order(record: Dict[str, Any]) -> Tuple[int, str, str]:
     return (-int(record.get("skill_match_pct", 0)), str(record.get("company", "")), str(record.get("title", "")).lower())
 
 
-def run_scan(args: argparse.Namespace) -> int:
-    state = load_state()
+def run_scan(args: argparse.Namespace, portals: Any = None, report: Dict[str, Any] | None = None) -> int:
+    """Scan the sites in args.company_list and mail what is new.
+
+    portals / report: another scan's sites and words (default: the company career sites).
+    """
+    portals = portals or PORTALS
+    report = report or COMPANY_SITES
+    stated_min_match = int(getattr(args, "stated_min_match", 0) or 0)
+    state = load_state(report["state_file"])
     now_iso = datetime.now(timezone.utc).isoformat()
     notes: List[str] = []
     read_ok: List[str] = []
     candidates: List[Dict[str, Any]] = []
     for key in args.company_list:
-        name = PORTALS[key][0]
+        name = portals[key][0]
         try:
-            summary = scan_site(key, state, args, now_iso)
+            summary = scan_site(key, state, args, now_iso, portals)
         except Exception as exc:  # one site failing must not stop the others
             runs = int(state["failures"].get(key, 0)) + 1
             state["failures"][key] = runs
             detail = str(exc) if isinstance(exc, PortalError) else f"{type(exc).__name__}: {exc}"
             LOG.warning("%s could not be read (%s); %d run(s) in a row.", name, detail, runs)
-            print(f"::warning::{name} career site could not be read: {detail}")
+            print(f"::warning::{name} could not be read: {detail}")
             notes.append(f"{name} could not be read this run ({detail}); {runs} run(s) in a row.")
             continue
         state["failures"][key] = 0
@@ -576,7 +602,7 @@ def run_scan(args: argparse.Namespace) -> int:
             notes.append(f"{name} listed no openings in India at all, which is unusual; the site may have changed.")
         if summary["waiting"]:
             notes.append(f"{name}: {summary['waiting']} posting(s) are still to be opened; they are judged in the next runs.")
-    for name, why in NOT_COVERED.items():
+    for name, why in report["not_covered"].items():
         notes.append(f"{name} is not covered: {why}.")
 
     known = set(state["reported"]) | {x for record in state["queue"] + state["held"] for x in _ids(record)}
@@ -598,23 +624,23 @@ def run_scan(args: argparse.Namespace) -> int:
 
     matches = sorted(state["queue"], key=_order)
     held = sorted(state["held"], key=_order)
-    LOG.info("Company sites: %d read, %d new opening(s) for %g years, %d new with no experience stated.",
-             len(read_ok), new_matches, args.candidate_yoe, new_held)
+    LOG.info("%s: %d read, %d new opening(s) for %g years, %d new with no experience stated.",
+             report["short"], len(read_ok), new_matches, args.candidate_yoe, new_held)
     for record in matches:
         LOG.info("  %3d%%  %s | %s | %s | %s | %s", int(record.get("skill_match_pct", 0)), record.get("company"), record.get("title"),
                  record.get("location"), core.experience_label(record), record.get("job_url"))
 
     mailed = True
     if matches or held:
-        body = build_mail(matches, held, args.candidate_yoe, notes, read_ok, args.min_match)
+        body = build_mail(matches, held, args.candidate_yoe, notes, read_ok, args.min_match, report, stated_min_match)
         stamp = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d %b %I:%M %p IST")
         subject = (
-            f"Company career sites: {len(matches)} new job(s) for {args.candidate_yoe:g} years' experience, "
+            f"{report['name']}: {len(matches)} new job(s) for {args.candidate_yoe:g} years' experience, "
             f"{len(held)} with no experience stated | {stamp}"
         )
         if args.dry_run:
             core.REPORT_DIR.mkdir(parents=True, exist_ok=True)
-            (core.REPORT_DIR / "company_portals_preview.html").write_text(body, encoding="utf-8")
+            (core.REPORT_DIR / report["preview"]).write_text(body, encoding="utf-8")
             LOG.info("Dry run: %r not sent; preview written to %s", subject, core.REPORT_DIR)
             for record in held:
                 LOG.info("  not stated %3d%%  %s | %s | %s | %s", int(record.get("skill_match_pct", 0)), record.get("company"),
@@ -623,7 +649,7 @@ def run_scan(args: argparse.Namespace) -> int:
             top = (matches or held)[0]
             more = f" (+{len(matches) + len(held) - 1} more)" if len(matches) + len(held) > 1 else ""
             pushed = core.send_push_notification(
-                f"Company sites: {len(matches)} new job(s) for your experience, {len(held)} not stated",
+                f"{report['short']}: {len(matches)} new job(s) for your experience, {len(held)} not stated",
                 f"{top.get('title')} at {top.get('company')}{more}: {int(top.get('skill_match_pct', 0))}% match, "
                 f"experience {core.experience_label(top).lower()}, {top.get('location')}.",
                 click_url=str(top.get("job_url") or ""), priority="high",
@@ -639,9 +665,9 @@ def run_scan(args: argparse.Namespace) -> int:
     for note in notes:
         LOG.info("Note: %s", note)
     if not args.dry_run:
-        save_state(state)
+        save_state(state, report["state_file"])
     if not read_ok:
-        LOG.error("No career site could be read.")
+        LOG.error("%s: nothing could be read.", report["short"])
         return 1
     return core._exit_code(mailed)
 

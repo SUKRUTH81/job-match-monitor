@@ -169,6 +169,22 @@ A posting whose stated experience leaves you out (3+ years, 5-8 years, 0-1 year)
 
 Run it by hand: Actions -> **Company Career Sites** -> Run workflow (tick `dry_run` to scan and log without sending or remembering anything), or locally `python company_portals.py --dry-run`. `hourly-timer.yml` starts it every hour, right after the job monitor. To stop it, disable the **Company Career Sites** workflow.
 
+## Naukri
+
+A fourth scan. Once an hour `naukri_scan.py` reads Naukri's public job search and mails each new opening once.
+
+- **No Naukri account.** Nothing is signed in to. A real browser on the GitHub runner opens the public search pages a visitor sees, because Naukri gives its job list only to a full browser.
+- **Not from your computer.** Every request comes from the GitHub runner. Do not run this script on your own machine if you do not want your own address to reach Naukri.
+- **No CAPTCHA is solved.** If Naukri answers with a block page or asks for a CAPTCHA, the run stops, shows as failed on the Actions tab, and nothing is worked around.
+
+**What it searches:** Python developer, AI engineer, generative AI, software engineer, full stack developer and backend developer, in Hyderabad, Bengaluru, Chennai and remote, posted in the last day, newest first (up to 3 result pages a search).
+
+**The rule:** the same title, location, full-time and Python role-fit rules as the hourly report; the experience range Naukri states has to include yours (`candidate_yoe`, default 2); and the skill match has to be `min_match` (default 60%) or more. A posting with no range stated goes into table 2 of the mail.
+
+It keeps its own memory (`data/naukri_state.json`, Actions cache `naukri-scan-v1-`), so the first run reports what is open now and later runs only what is new. No mail is sent when nothing is new.
+
+Run it by hand: Actions -> **Naukri Scan** -> Run workflow (tick `dry_run` to scan and log without sending or remembering anything). To stop it, disable the **Naukri Scan** workflow.
+
 ## Notifications (Push, Email & Issues)
 
 1. **Instant Phone Push Notifications (ntfy.sh):**

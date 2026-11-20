@@ -8,6 +8,7 @@ on:
     paths:
       - 'job_match_runner.py'
       - 'company_portals.py'
+      - 'naukri_scan.py'
       - 'requirements.txt'
       - 'tests/**'
       - '.github/workflows/tests.yml'
@@ -48,3 +49,6 @@ jobs:
 
       - name: Company career sites
         run: python tests/test_company_portals.py
+
+      - name: Naukri scan
+        run: python tests/test_naukri_scan.py
