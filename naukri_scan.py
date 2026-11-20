@@ -43,7 +43,9 @@ SEARCH_PLACES: List[Tuple[str, str, str]] = [
 PAGES_PER_SEARCH = 3
 # Days back Naukri is asked for. One day is its shortest window.
 JOB_AGE_DAYS = 1
-SCAN_BUDGET_SECONDS = 15 * 60.0
+SCAN_BUDGET_SECONDS = 20 * 60.0
+# Wait between two search pages. A visitor does not open a page every second, and neither does this.
+PAGE_PAUSE_MS = 6000
 REFUSALS_TO_STOP = 3
 
 REPORT: Dict[str, Any] = {
@@ -141,7 +143,8 @@ def read_naukri(candidate_yoe: float, keywords: Sequence[str], places: Sequence[
                                                    wait_until="domcontentloaded", timeout=45000)
                                 status = opened.status if opened else None
                             except Exception as exc:
-                                LOG.info("Naukri: %s / %s page %d did not open (%s).", keyword, place_name, number, type(exc).__name__)
+                                reason = " ".join(str(exc).split())[:160]
+                                LOG.info("Naukri: %s / %s page %d did not open (%s).", keyword, place_name, number, reason)
                             for _ in range(20):
                                 if answers:
                                     break
@@ -158,13 +161,14 @@ def read_naukri(candidate_yoe: float, keywords: Sequence[str], places: Sequence[
                                         f"Naukri refused the browser {refused} times in a row "
                                         f"(page HTTP {status}, search answers {codes or 'none'}); the scan stopped without retrying"
                                     )
+                                page.wait_for_timeout(PAGE_PAUSE_MS)
                                 break
                             refused = 0
                             found = naukri_records(listed)
                             for record in found:
                                 jobs.setdefault(record["job_id"], record)
                             total = int(listed.get("noOfJobs") or 0)
-                            page.wait_for_timeout(1500)
+                            page.wait_for_timeout(PAGE_PAUSE_MS)
                             if len(listed.get("jobDetails") or []) < 20 or number * 20 >= total:
                                 break
             finally:
