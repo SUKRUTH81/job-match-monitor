@@ -4,6 +4,7 @@ Usage: python tests/test_company_portals.py [<repo_dir>]   (default: the folder 
 Nothing is sent and no career site is contacted: the sites, mail and push are replaced by stand-ins.
 """
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -70,8 +71,9 @@ for name, record, expected in JUDGED:
 class FakeSite:
     """Stands in for cp.Site: answers from a table of url fragment -> payload."""
 
-    def __init__(self, answers, keywords=("Python",)):
+    def __init__(self, answers, keywords=("Python",), candidate_yoe=2.0):
         self.answers, self.keywords, self.requests_made, self.asked, self.posted = answers, list(keywords), 0, [], []
+        self.candidate_yoe = candidate_yoe
 
     def out_of_time(self):
         return False
@@ -294,8 +296,63 @@ except cp.PortalError:
     refused = True
 check("Tech Mahindra: no job page is read when the button did not open one", refused and other["description"] == "")
 
+infosys_site = FakeSite({"getCareerSearchJobs": [
+    {"referenceCode": "INFSYS-EXTERNAL-256133", "requisitionId": 256133, "postingTitle": "Python ML_GenAI Engineers", "location": "CHENNAI", "country": "India",
+     "minExperienceLevel": 1, "maxExperienceLevel": 2, "createdOn": "2026-11-04T10:15:00.12", "postingDescription": "",
+     "rolesResponsibilities": "Build GenAI services.\n• Own the API layer", "technicalRequirement": "Python, SQL, FastAPI",
+     "preferredSkills": "Technology->Machine Learning->Python", "additionalResponsibility": "", "educationalRequirement": "Bachelor of Engineering"},
+    {"referenceCode": "INFSYS-EXTERNAL-256200", "postingTitle": "Technology Lead", "location": "Kolkata(WB)", "country": "India",
+     "minExperienceLevel": 5, "maxExperienceLevel": 8, "rolesResponsibilities": "Lead the team."},
+    {"referenceCode": "INFSYS-EXTERNAL-256201", "postingTitle": "Python Developer", "location": "PUNE                     ", "country": "India",
+     "minExperienceLevel": 0, "maxExperienceLevel": 0, "rolesResponsibilities": "Python."},
+    {"postingTitle": "A posting with no reference"},
+]})
+infosys = cp.read_infosys(infosys_site)
+junior = one(infosys)
+check("Infosys: one request for the whole list; a posting with no reference is skipped", infosys_site.requests_made == 1 and len(infosys) == 3, str(len(infosys)))
+check("Infosys: id, link, place and date", (junior.get("job_id"), junior.get("job_url"), junior.get("location"), junior.get("posted_time")) ==
+      ("infosys:INFSYS-EXTERNAL-256133", "https://career.infosys.com/jobdesc?jobReferenceCode=INFSYS-EXTERNAL-256133", "Chennai, India", "2026-11-04")
+      and core.location_is_eligible(junior), str(junior))
+check("Infosys: the text keeps its headings and lines", "Responsibilities:\nBuild GenAI services.\n• Own the API layer" in junior.get("description", "")
+      and "Preferred skills:\nTechnology->Machine Learning->Python" in junior.get("description", ""), junior.get("description", ""))
+check("Infosys: the listed years decide before the text is judged", junior.get("experience") == "1 - 2 Years" and not cp.listed_experience_excludes(junior, 2.0)
+      and len(infosys) == 3 and infosys[1]["location"] == "Kolkata(WB), India" and cp.listed_experience_excludes(infosys[1], 2.0)
+      and "experience" not in infosys[2] and infosys[2]["location"] == "Pune, India", str([j.get("experience") for j in infosys]))
+try:
+    cp.read_infosys(FakeSite({"getCareerSearchJobs": {"error": "down"}}))
+    refused = False
+except cp.PortalError:
+    refused = True
+check("Infosys: an answer that is not a job list is a site failure", refused)
+
+ACCENTURE_JOB = {
+    "requisitionId": "ATCI-5729291-S2065618", "title": "Custom Software Engineer", "location": ["Bengaluru", "Chennai"], "country": "India",
+    "jobDetailUrl": "https://www.accenture.com/{0}/careers/jobdetails?id=ATCI-5729291-S2065618_en&title=Custom+Software+Engineer",
+    "jobDescription": "<b>Project Role : </b>Custom Software Engineer<br><b>Must have skills : </b>Python (Programming Language)<br>Minimum 2 year(s) of experience is required",
+    "updateDate": "2026-11-20T08:47:02.450-08:00", "employeeType": "Full-time", "remoteType": "", "yearsOfExperience": "Experience: 2-5 years",
+}
+accenture_site = FakeSite({"elastic/findjobs": {"data": [
+    ACCENTURE_JOB, {**ACCENTURE_JOB, "requisitionId": ""}, {**ACCENTURE_JOB, "requisitionId": "X-1", "jobDetailUrl": "javascript:void(0)"},
+]}}, keywords=("Python", "AI Engineer"))
+accenture = cp.read_accenture(accenture_site)
+job = one(accenture)
+sent = accenture_site.posted[-1] if accenture_site.posted else {}
+check("Accenture: one search per keyword; a posting with no id or no link is skipped", accenture_site.requests_made == 2 and len(accenture) == 1, str(len(accenture)))
+check("Accenture: newest first, the three cities, the bands that hold 2 years", (sent.get("jobKeyword"), sent.get("sortBy"), sent.get("jobCountry")) == ("AI Engineer", 1, "India")
+      and json.loads(sent.get("jobFilters", "[]")) == [
+          {"fieldName": "location.keyword", "items": ["Hyderabad", "Bengaluru", "Chennai"], "multiSelect": False},
+          {"fieldName": "yearsOfExperience.keyword", "items": ["Experience: 0-2 years", "Experience: 2-5 years"], "multiSelect": False}], str(sent))
+check("Accenture: id, link, places and date", (job.get("job_id"), job.get("job_url"), job.get("location"), job.get("posted_time")) ==
+      ("accenture:ATCI-5729291-S2065618", "https://www.accenture.com/in-en/careers/jobdetails?id=ATCI-5729291-S2065618_en&title=Custom+Software+Engineer",
+       "Bengaluru / Chennai, India", "2026-11-20") and core.location_is_eligible(job) and core.employment_is_eligible(job), str(job))
+check("Accenture: the text states the years; the band is not taken as the posting's own figure",
+      core.parse_experience_requirement(job) == (2.0, None) and "experience" not in job, str(core.parse_experience_requirement(job)))
+senior_site = FakeSite({"elastic/findjobs": {"data": []}}, candidate_yoe=6.0)
+cp.read_accenture(senior_site)
+check("Accenture: the bands follow the candidate's years", json.loads(senior_site.posted[-1]["jobFilters"])[1]["items"] == ["Experience: 5-10 years"], str(senior_site.posted[-1]))
+
 check("the companies asked for are either read or named as not covered",
-      set(cp.PORTALS) == {"ntt", "amazon", "cognizant", "tiger", "infor", "jpmc", "capgemini", "ltim", "ey", "techm", "wipro"}
+      set(cp.PORTALS) == {"ntt", "amazon", "cognizant", "tiger", "infor", "jpmc", "capgemini", "ltim", "ey", "techm", "wipro", "infosys", "accenture"}
       and set(cp.NOT_COVERED) == {"EPAM", "Cimpress", "Sify", "Hetero"})
 
 
@@ -304,7 +361,7 @@ work = Path(tempfile.mkdtemp(prefix="jmr_portals_"))
 cp.STATE_FILE = work / "company_portal_state.json"
 core.DATA_DIR = work
 core.REPORT_DIR = work / "reports"
-cp.Site = lambda keywords: FakeSite({}, keywords)
+cp.Site = lambda keywords, candidate_yoe=2.0: FakeSite({}, keywords, candidate_yoe)
 sent = {"mail": [], "push": []}
 outcome = {"mail": True, "push": True}
 core.send_gmail = lambda subject, body, attachment=None: (sent["mail"].append((subject, body)), outcome["mail"])[1]

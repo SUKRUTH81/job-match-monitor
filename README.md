@@ -155,12 +155,16 @@ A third scan, beside the hourly report and the Hyderabad alert. Once an hour `co
 | EY | careers.ey.com job feed |
 | Tech Mahindra | careers.techmahindra.com |
 | Wipro | careers.wipro.com job feed |
+| Infosys | the job search behind career.infosys.com |
+| Accenture | accenture.com job search |
 
 **Not covered:** EPAM (its India site hands a script only 10 of its roughly 340 jobs, in no date order), Cimpress (its career site answers a script with an empty job list), Sify (its job board, sifycareer.tallite.com, answers only requests signed and encrypted by its own page) and Hetero (its job board, hetero.darwinbox.in, refuses a script with HTTP 403). Every mail repeats this, so the gap is not forgotten.
 
 **Tech Mahindra links.** A Tech Mahindra job has no link of its own, so its row links to the openings page and its "Posted" cell gives the job reference number: type that number into "Job Reference ID" on the page to open the job.
 
-**Experience listed beside the title.** LTIMindtree and Tech Mahindra show the years next to each title. A posting listed outside your years is dropped there, without opening its page; one listed inside them is opened, and its text must not ask for more.
+**Experience listed beside the title.** LTIMindtree, Tech Mahindra and Infosys show the years next to each title. A posting listed outside your years is dropped there, without opening its page; one listed inside them is read, and its text must not ask for more.
+
+**Accenture's experience bands.** Accenture sorts every posting into a band (0-2, 2-5, 5-10 years, ...) and stamps several hundred India postings a day in one batch. The scan asks only for the three cities and the bands that hold your years, so the newest 100 of each search reach back about two days. The band is only used to narrow the search: the years a posting asks for are still read from its text.
 
 **The rule.** An opening is reported when it is in Hyderabad, Bengaluru or Chennai (or remote in India), is one of your roles, is full-time, and:
 

@@ -68,9 +68,10 @@ class PortalError(Exception):
 class Site:
     """Requests to one career site: retries, a pause after each request, and a time budget."""
 
-    def __init__(self, keywords: Sequence[str]):
+    def __init__(self, keywords: Sequence[str], candidate_yoe: float = 2.0):
         self.session = core.requests.Session()
         self.keywords = list(keywords)
+        self.candidate_yoe = candidate_yoe  # for a site whose search can be narrowed by years of experience
         self.deadline = time.monotonic() + SITE_BUDGET_SECONDS
         self.requests_made = 0
 
@@ -545,6 +546,80 @@ def read_tech_mahindra(site: Site) -> List[Dict[str, Any]]:
     return list(jobs.values())
 
 
+# Infosys's career page (career.infosys.com) refuses a script, but the job-search service the page
+# reads answers one: every open India posting in a single answer, each with its text and its years.
+_INFOSYS_JOBS = "https://intapgateway.infosysapps.com/careersci/search/intapjbsrch/getCareerSearchJobs"
+_INFOSYS_JOB_PAGE = "https://career.infosys.com/jobdesc?jobReferenceCode="
+
+
+def read_infosys(site: Site) -> List[Dict[str, Any]]:
+    data = site.json(_INFOSYS_JOBS, {"sourceId": "1,21", "searchText": "ALL"})
+    if not isinstance(data, list):
+        raise PortalError(f"unreadable answer from {_INFOSYS_JOBS}")
+    jobs: Dict[str, Dict[str, Any]] = {}
+    for item in data:
+        reference = _one_line(item.get("referenceCode")) if isinstance(item, dict) else ""
+        if not reference:
+            continue
+        city = _one_line(item.get("location"))  # "BANGALORE", "Kolkata(WB)"
+        record = _record(
+            "infosys", "Infosys", reference, item.get("postingTitle"),
+            f"{city.title() if city.isupper() else city}, {_one_line(item.get('country')) or 'India'}",
+            _INFOSYS_JOB_PAGE + quote(reference),
+            description=_sections(
+                ("", item.get("postingDescription")),
+                ("Responsibilities", item.get("rolesResponsibilities")),
+                ("Technical requirements", item.get("technicalRequirement")),
+                ("Preferred skills", item.get("preferredSkills")),
+                ("Additional responsibilities", item.get("additionalResponsibility")),
+                ("Education", item.get("educationalRequirement")),
+            ),
+            posted=str(item.get("createdOn") or "")[:10],
+        )
+        low, high = item.get("minExperienceLevel"), item.get("maxExperienceLevel")
+        if isinstance(low, (int, float)) and isinstance(high, (int, float)) and high > 0:
+            record["experience"] = f"{low:g} - {high:g} Years"  # the site's own fields, shown beside the title
+        jobs[reference] = record
+    return list(jobs.values())
+
+
+# Accenture marks every posting with one of these experience bands, and its search can be narrowed
+# to them. It stamps several hundred India postings a day in one batch, so the newest 100 of a search
+# reach back far enough only when the search is narrowed to the cities and to the candidate's bands.
+_ACCENTURE_SEARCH = "https://www.accenture.com/api/accenture/elastic/findjobs"
+_ACCENTURE_BANDS = ((0, 2), (2, 5), (5, 10), (10, 12), (12, 14))
+
+
+def read_accenture(site: Site) -> List[Dict[str, Any]]:
+    bands = [f"Experience: {low}-{high} years" for low, high in _ACCENTURE_BANDS if low <= site.candidate_yoe <= high]
+    filters = [{"fieldName": "location.keyword", "items": SEARCH_CITIES, "multiSelect": False}]
+    if bands:
+        filters.append({"fieldName": "yearsOfExperience.keyword", "items": bands, "multiSelect": False})
+    jobs: Dict[str, Dict[str, Any]] = {}
+    for keyword in site.keywords:
+        data = site.json(_ACCENTURE_SEARCH, data={
+            "startIndex": 0, "maxResultSize": NEWEST_PER_SEARCH, "jobKeyword": keyword, "jobCountry": "India",
+            "jobLanguage": "en", "countrySite": "in-en", "sortBy": 1,  # 1 = newest first
+            # The page's own search ("vectorSearch") also returns postings that are only near the word;
+            # any other value searches for the word itself.
+            "searchType": "keyword", "jobFilters": json.dumps(filters),
+        })
+        for item in data.get("data") or []:
+            native_id = _one_line(item.get("requisitionId"))
+            url = str(item.get("jobDetailUrl") or "").replace("{0}", "in-en")
+            if not native_id or not url.startswith("https://www.accenture.com/"):
+                continue
+            places = item.get("location") or []
+            places = [places] if isinstance(places, str) else places
+            jobs[native_id] = _record(
+                "accenture", "Accenture", native_id, item.get("title"),
+                f"{' / '.join(_one_line(place) for place in places if place)}, {_one_line(item.get('country')) or 'India'}",
+                url, description=_text(item.get("jobDescription")), posted=str(item.get("updateDate") or "")[:10],
+                workplace=item.get("remoteType"), employment=item.get("employeeType"),
+            )
+    return list(jobs.values())
+
+
 # key: (name shown in the mail, reader). The order is the order of the scan.
 PORTALS: Dict[str, Tuple[str, Callable[[Site], List[Dict[str, Any]]]]] = {
     "ntt": ("NTT DATA", read_ntt_data),
@@ -558,6 +633,8 @@ PORTALS: Dict[str, Tuple[str, Callable[[Site], List[Dict[str, Any]]]]] = {
     "ey": ("EY", read_ey),
     "techm": ("Tech Mahindra", read_tech_mahindra),
     "wipro": ("Wipro", read_wipro),
+    "infosys": ("Infosys", read_infosys),
+    "accenture": ("Accenture", read_accenture),
 }
 # Asked for, but not readable by a script. Each entry is said in every mail, so the gap is not forgotten.
 NOT_COVERED = {
@@ -668,7 +745,7 @@ def listed_experience_excludes(job: Dict[str, Any], candidate_yoe: float) -> boo
 def scan_site(key: str, state: Dict[str, Any], args: argparse.Namespace, now_iso: str, portals: Any = None) -> Dict[str, Any]:
     """Read one career site and judge the postings not judged before."""
     name, reader = (portals or PORTALS)[key]
-    site = Site(args.keyword_list)
+    site = Site(args.keyword_list, args.candidate_yoe)
     listing = reader(site)
     summary: Dict[str, Any] = {"listed": len(listing), "new": 0, "waiting": 0, "candidates": [], "reasons": {}}
     pages_left = MAX_DETAIL_PAGES
