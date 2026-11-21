@@ -27,6 +27,7 @@ import json
 import logging
 import re
 import time
+import xml.etree.ElementTree as ElementTree
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Sequence, Tuple
 from urllib.parse import quote
@@ -76,14 +77,20 @@ class Site:
     def out_of_time(self) -> bool:
         return time.monotonic() > self.deadline
 
-    def fetch(self, url: str, params: Dict[str, Any] | None = None, accept: str = "application/json") -> Any:
+    def fetch(self, url: str, params: Dict[str, Any] | None = None, accept: str = "application/json",
+              data: Dict[str, Any] | None = None) -> Any:
+        """One page of the site. With data, the request is a form post (a search form, a "view job" button)."""
         if self.out_of_time():
             raise PortalError("time limit for this site reached")
         problem = "no answer"
         for attempt in range(3):
             self.requests_made += 1
             try:
-                response = self.session.get(url, params=params, headers={**BROWSER_HEADERS, "Accept": accept}, timeout=25)
+                headers = {**BROWSER_HEADERS, "Accept": accept}
+                if data is None:
+                    response = self.session.get(url, params=params, headers=headers, timeout=25)
+                else:
+                    response = self.session.post(url, params=params, data=data, headers=headers, timeout=25)
             except core.requests.RequestException as exc:
                 problem = type(exc).__name__
             else:
@@ -96,14 +103,21 @@ class Site:
             time.sleep(2.0 * (attempt + 1))
         raise PortalError(f"{problem} from {url.split('?')[0]}")
 
-    def json(self, url: str, params: Dict[str, Any] | None = None) -> Any:
+    def json(self, url: str, params: Dict[str, Any] | None = None, data: Dict[str, Any] | None = None) -> Any:
         try:
-            return self.fetch(url, params).json()
+            return self.fetch(url, params, data=data).json()
         except ValueError as exc:
             raise PortalError(f"unreadable answer from {url.split('?')[0]}") from exc
 
-    def soup(self, url: str, params: Dict[str, Any] | None = None) -> Any:
-        return core.BeautifulSoup(self.fetch(url, params, accept="text/html,application/xhtml+xml").text, "html.parser")
+    def soup(self, url: str, params: Dict[str, Any] | None = None, data: Dict[str, Any] | None = None) -> Any:
+        return core.BeautifulSoup(self.fetch(url, params, accept="text/html,application/xhtml+xml", data=data).text, "html.parser")
+
+    def feed(self, url: str, params: Dict[str, Any] | None = None) -> Any:
+        """The root element of an RSS job feed."""
+        try:
+            return ElementTree.fromstring(self.fetch(url, params, accept="application/rss+xml,application/xml").content)
+        except ElementTree.ParseError as exc:
+            raise PortalError(f"unreadable feed from {url.split('?')[0]}") from exc
 
 
 def _one_line(value: Any) -> str:
@@ -372,6 +386,165 @@ def read_cognizant(site: Site) -> List[Dict[str, Any]]:
     return list(jobs.values())
 
 
+# Wipro and EY run the same career-site software, which publishes each search as a job feed: the
+# newest postings first, each with its full text, so no job page has to be opened.
+_FEED_PLACES = "Hyderabad OR Secunderabad OR Bengaluru OR Bangalore OR Chennai"
+_FEED_TITLE = re.compile(r"^(.*\S)\s*\(([^()]*)\)\s*$", re.S)
+
+
+def _feed_location(place: str) -> str:
+    """'Bengaluru, IND-29, IN, 560035' -> 'Bengaluru, India'; a place outside India is kept as written."""
+    parts = [part.strip() for part in place.split(",") if part.strip()]
+    return f"{parts[0]}, India" if "IN" in parts[1:] else ", ".join(parts)
+
+
+def _read_job_feed(site: Site, key: str, company: str, base: str) -> List[Dict[str, Any]]:
+    jobs: Dict[str, Dict[str, Any]] = {}
+    for keyword in site.keywords:
+        root = site.feed(f"{base}/services/rss/job/", {
+            "locale": "en_US", "rows": NEWEST_PER_SEARCH, "keywords": f"({keyword}) AND locationSearch:({_FEED_PLACES})",
+        })
+        for item in root.iter("item"):
+            url = str(item.findtext("link") or "").split("?")[0]
+            number = re.search(r"/(\d{5,})/?$", url)
+            named = _FEED_TITLE.match(_one_line(item.findtext("title")))
+            if not number or not named or not url.startswith("https://"):
+                continue
+            title = named.group(1)
+            posted = re.search(r"\d{1,2} [A-Za-z]{3} \d{4}", str(item.findtext("pubDate") or ""))
+            jobs[number.group(1)] = _record(
+                key, company, number.group(1), title, _feed_location(named.group(2)), url,
+                description=_text(item.findtext("description")), posted=posted.group(0) if posted else "",
+                # Wipro marks a contract post in its title: "DEVELOPER L3(CONTRACT)".
+                employment="Contract" if re.search(r"\(\s*contract\s*\)", title, re.I) else "",
+            )
+    return list(jobs.values())
+
+
+def read_wipro(site: Site) -> List[Dict[str, Any]]:
+    return _read_job_feed(site, "wipro", "Wipro", "https://careers.wipro.com")
+
+
+def read_ey(site: Site) -> List[Dict[str, Any]]:
+    return _read_job_feed(site, "ey", "EY", "https://careers.ey.com")
+
+
+# LTIMindtree (now trading as LTM) lists its jobs at ltm.ripplehire.com. The token is the public one
+# in the "India" link on ltm.com/careers.
+_LTIM_SITE = "https://ltm.ripplehire.com/candidate/"
+_LTIM_TOKEN = "xviyQvbnyYZdGtozXoNm"
+_LTIM_PAGE = 100
+_LTIM_PAGES = 5
+
+
+def _ltim_detail(site: Site, job: Dict[str, Any]) -> None:
+    native_id = job["job_id"].split(":", 1)[1]
+    data = site.json(_LTIM_SITE + "candidatejobdetail", {"token": _LTIM_TOKEN, "jobSeq": native_id, "source": "CAREERSITE", "lang": "en"})
+    item = data.get("jobVO") or {}
+    job["description"] = _sections(("", item.get("jobDesc")), ("Skills", item.get("jobSkills")))
+    if item.get("jobPostingDate"):
+        job["posted_time"] = job["freshness_badge"] = _one_line(item["jobPostingDate"])
+    kind = _one_line(item.get("jobTypeCustom3"))
+    if kind and kind.lower() != "permanent":
+        job["employment_type"] = kind
+
+
+def read_ltimindtree(site: Site) -> List[Dict[str, Any]]:
+    jobs: Dict[str, Dict[str, Any]] = {}
+    for city in [*SEARCH_CITIES, "Bangalore"]:  # the site spells Bengaluru both ways
+        for page in range(_LTIM_PAGES):
+            query = {"page": page, "search": "*:*", "token": _LTIM_TOKEN, "source": "CAREERSITE",
+                     "pagesize": _LTIM_PAGE, "geo": "India", "location": city}
+            data = site.json(_LTIM_SITE + "candidatejobsearch", data={"careerSiteUrlParams": json.dumps(query), "lang": "en"})
+            items = data.get("jobVoList") or []
+            for item in items:
+                native_id = str(item.get("jobSeq") or "")
+                if not native_id:
+                    continue
+                record = _record(
+                    "ltim", "LTIMindtree", native_id, item.get("jobTitle"), f"{_one_line(item.get('locations')) or city}, India",
+                    f"{_LTIM_SITE}?token={_LTIM_TOKEN}&lang=en&source=CAREERSITE#detail/job/{native_id}",
+                )
+                record["experience"] = _one_line(item.get("jobReqExp"))  # "5 - 7 Years", listed beside the title
+                record["_detail"] = _ltim_detail
+                jobs[native_id] = record
+            if len(items) < _LTIM_PAGE or (page + 1) * _LTIM_PAGE >= int(data.get("totalJobCount") or 0):
+                break
+    return list(jobs.values())
+
+
+# Tech Mahindra's site is one page: a search posts its form back, and a job's own page opens only
+# through that job's button, in the same visit. A job has no link of its own, so the mail links to
+# the openings page and gives the job reference number to search for there.
+_TECHM_SITE = "https://careers.techmahindra.com/"
+_TECHM_PAGE = _TECHM_SITE + "CurrentOpportunity.aspx"
+_TECHM_FIELD = "ctl00$ContentPlaceHolder1$"
+_TECHM_CARD = re.compile(r"Skill Set\s*:\s*(.*?)\s*Experience\s*:\s*(.*?)\s*Location\s*:\s*(.*)$", re.S)
+_TECHM_OPENS_JOB = re.compile(r"window\.open\(\s*['\"]JobDetails\.aspx")
+
+
+def _form_fields(page: Any) -> Dict[str, str]:
+    """What a browser would send back for the page's form, before any button is pressed."""
+    fields = {box["name"]: str(box.get("value") or "") for box in page.select("input[type=hidden], input[type=text]") if box.get("name")}
+    for menu in page.select("select"):
+        chosen = menu.select_one("option[selected]") or menu.select_one("option")
+        if menu.get("name"):
+            fields[menu["name"]] = str(chosen.get("value") or "") if chosen else ""
+    return fields
+
+
+def _techm_detail(form: Dict[str, str], button: str) -> Callable[[Site, Dict[str, Any]], None]:
+    def fill(site: Site, job: Dict[str, Any]) -> None:
+        # The button answers with the same page plus a script that opens JobDetails.aspx, which then
+        # shows the job this visit pressed last. Both are checked, so one job's text never lands on another.
+        pressed = site.soup(_TECHM_PAGE, data={**form, button: "Apply/Shortlist"})
+        if not _TECHM_OPENS_JOB.search(str(pressed)):
+            raise PortalError("the site did not open the job page")
+        page = site.soup(_TECHM_SITE + "JobDetails.aspx")
+        heading = page.select_one("[id$=lblDesignationName]")
+        if not heading or _one_line(heading.get_text()).lower() != job["title"].lower():
+            raise PortalError("the job page shown was not this job's")
+        facts = {}
+        for row in page.select(".job-details li"):
+            label, value = row.select_one("b"), row.select_one("span")
+            if label and value:
+                facts[_one_line(label.get_text()).rstrip(": ").lower()] = _one_line(value.get_text())
+        summary = next((h.parent for h in page.select("h3") if _one_line(h.get_text()).lower() == "job summary"), None)
+        job["description"] = "\n\n".join(part for part in (
+            f"Skill set: {facts['skill set']}" if facts.get("skill set") else "",
+            f"Total experience: {facts['total experience']}" if facts.get("total experience") else "",
+            core._html_to_text(summary) if summary else "",
+        ) if part)
+        place = re.match(r"^(.*?)\s*\[(.+)\]$", facts.get("location", ""))  # "HYDERABAD [India]"
+        if place:
+            job["location"] = f"{place.group(1).title()}, {place.group(2)}"
+        job["posted_time"] = facts.get("job post date", "")
+        reference = facts.get("job reference no", "")
+        job["freshness_badge"] = "; ".join(part for part in (
+            job["posted_time"], f"search job reference {reference} on the page" if reference else "") if part) or "Date not shown"
+    return fill
+
+
+def read_tech_mahindra(site: Site) -> List[Dict[str, Any]]:
+    blank = _form_fields(site.soup(_TECHM_PAGE))
+    jobs: Dict[str, Dict[str, Any]] = {}
+    for keyword in site.keywords:
+        page = site.soup(_TECHM_PAGE, data={**blank, _TECHM_FIELD + "txtAdvanceSearch": keyword, _TECHM_FIELD + "btnFreeSearch": "Search"})
+        form = _form_fields(page)
+        for code in page.select("input[name$=HdnJobCode]"):
+            card = code.parent
+            title, details = card.find("div"), card.find("p")
+            listed = _TECHM_CARD.search(_one_line(details.get_text(" "))) if details else None
+            native_id = str(code.get("value") or "")
+            if not native_id or not title or not listed or native_id in jobs:
+                continue
+            record = _record("techm", "Tech Mahindra", native_id, title.get_text(), listed.group(3).title(), _TECHM_PAGE)
+            record["experience"] = listed.group(2)  # "4.00-7.00 Years"
+            record["_detail"] = _techm_detail(form, code["name"].replace("HdnJobCode", "btn_jobs"))
+            jobs[native_id] = record
+    return list(jobs.values())
+
+
 # key: (name shown in the mail, reader). The order is the order of the scan.
 PORTALS: Dict[str, Tuple[str, Callable[[Site], List[Dict[str, Any]]]]] = {
     "ntt": ("NTT DATA", read_ntt_data),
@@ -381,11 +554,17 @@ PORTALS: Dict[str, Tuple[str, Callable[[Site], List[Dict[str, Any]]]]] = {
     "infor": ("Infor", read_infor),
     "jpmc": ("JPMorgan Chase", read_jpmc),
     "capgemini": ("Capgemini", read_capgemini),
+    "ltim": ("LTIMindtree", read_ltimindtree),
+    "ey": ("EY", read_ey),
+    "techm": ("Tech Mahindra", read_tech_mahindra),
+    "wipro": ("Wipro", read_wipro),
 }
 # Asked for, but not readable by a script. Each entry is said in every mail, so the gap is not forgotten.
 NOT_COVERED = {
     "EPAM": "its India career site (jobs.welcome.epam.in) hands a script only 10 of its roughly 340 jobs, in no date order",
     "Cimpress": "its career site (cimpress.ripplehire.com) answers with an empty job list",
+    "Sify": "its job board (sifycareer.tallite.com) answers only requests signed and encrypted by its own page",
+    "Hetero": "its job board (hetero.darwinbox.in) refuses a script with HTTP 403",
 }
 
 # The words and the state file of this scan. Another scan that reuses run_scan() brings its own
@@ -477,6 +656,15 @@ def judge(job: Dict[str, Any], candidate_yoe: float, min_match: int = 60, stated
     return ("no_yoe", "") if score >= min_match else ("", BELOW_MATCH)
 
 
+def listed_experience_excludes(job: Dict[str, Any], candidate_yoe: float) -> bool:
+    """The experience a site lists beside the title (record["experience"]) already leaves the candidate out.
+
+    Such a posting is dropped without opening its page: the page could only repeat the figure.
+    """
+    listed = {"title": job.get("title"), "experience": job.get("experience")}
+    return bool(listed["experience"]) and core.experience_is_stated(listed) and not core.experience_is_eligible(listed, candidate_yoe)
+
+
 def scan_site(key: str, state: Dict[str, Any], args: argparse.Namespace, now_iso: str, portals: Any = None) -> Dict[str, Any]:
     """Read one career site and judge the postings not judged before."""
     name, reader = (portals or PORTALS)[key]
@@ -494,6 +682,7 @@ def scan_site(key: str, state: Dict[str, Any], args: argparse.Namespace, now_iso
         # A description cannot rescue a posting whose title or place is already out, so those are not opened.
         early = "" if core.title_is_eligible(job) else "Job title"
         early = early or ("" if core.location_is_eligible(job) else "Location")
+        early = early or ("Experience" if listed_experience_excludes(job, args.candidate_yoe) else "")
         if not early and fill and not job["description"].strip():
             if pages_left <= 0 or site.out_of_time():
                 summary["waiting"] += 1

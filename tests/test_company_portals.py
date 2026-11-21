@@ -71,26 +71,34 @@ class FakeSite:
     """Stands in for cp.Site: answers from a table of url fragment -> payload."""
 
     def __init__(self, answers, keywords=("Python",)):
-        self.answers, self.keywords, self.requests_made, self.asked = answers, list(keywords), 0, []
+        self.answers, self.keywords, self.requests_made, self.asked, self.posted = answers, list(keywords), 0, [], []
 
     def out_of_time(self):
         return False
 
-    def _find(self, url):
+    def _find(self, url, data=None):
         self.requests_made += 1
         self.asked.append(url)
+        if data is not None:
+            self.posted.append(data)
         for fragment, payload in self.answers.items():
             if fragment in url:
+                if callable(payload):  # an answer that depends on the form sent
+                    payload = payload(data)
                 if isinstance(payload, Exception):
                     raise payload
                 return payload
         raise cp.PortalError(f"HTTP 404 from {url}")
 
-    def json(self, url, params=None):
-        return self._find(url)
+    def json(self, url, params=None, data=None):
+        return self._find(url, data)
 
-    def soup(self, url, params=None):
-        return core.BeautifulSoup(self._find(url), "html.parser")
+    def soup(self, url, params=None, data=None):
+        return core.BeautifulSoup(self._find(url, data), "html.parser")
+
+    def feed(self, url, params=None):
+        self.asked.append(str(params))
+        return cp.ElementTree.fromstring(self._find(url))
 
 
 def one(jobs):
@@ -169,8 +177,126 @@ if fill:
     fill(FakeSite({"/global-en/jobs/": COGNIZANT_JOB}), cognizant)
 check("Cognizant: the job page supplies experience, date and work model", core.parse_experience_requirement(cognizant) == (2.0, 4.0)
       and cognizant.get("posted_time") == "Oct 26 2026" and cognizant.get("workplace_type") == "Hybrid", str(cognizant))
+# Wipro and EY: a job feed, newest first, each item with its full text.
+FEED = """<?xml version="1.0" encoding="UTF-8" ?><rss version="2.0"><channel><title>Custom Search</title>
+<item><title><![CDATA[Engineer - Python Full Stack Development (Bengaluru, IND-29, IN, 560035)]]></title>
+<description><![CDATA[<p>Experience: 1-3 Years</p><ul><li>Python, Django, React</li></ul>]]></description>
+<pubDate>Fri, 20 Nov 2026 2:00:00 GMT</pubDate>
+<link>https://careers.wipro.com/job/Bengaluru-Engineer-Python-Full-Stack-Development-IND-560035/1369349855/?feedId=null&amp;utm_source=J2WRSS</link></item>
+<item><title><![CDATA[DEVELOPER L3(CONTRACT) (Hyderabad, IND-36, IN, 500032)]]></title><description><![CDATA[<p>Python</p>]]></description>
+<pubDate>Sat, 21 Nov 2026 2:00:00 GMT</pubDate><link>https://careers.wipro.com/job/Hyderabad-DEVELOPER-L3%28CONTRACT%29-IND-500032/1340549955/?feedId=null</link></item>
+<item><title><![CDATA[Python Developer (Warsaw, PL, 00-001)]]></title><description><![CDATA[<p>Python</p>]]></description>
+<pubDate>Sat, 21 Nov 2026 2:00:00 GMT</pubDate><link>https://careers.wipro.com/job/Warsaw-Python-Developer/1340549956/</link></item>
+<item><title><![CDATA[A title with no place]]></title><description>x</description><link>https://careers.wipro.com/job/x/1340549957/</link></item>
+</channel></rss>"""
+wipro_site = FakeSite({"careers.wipro.com/services/rss/job/": FEED}, keywords=("Python", "AI Engineer"))
+wipro = cp.read_wipro(wipro_site)
+first = one(wipro)
+check("Wipro: one search per keyword, limited to the three cities", wipro_site.requests_made == 2
+      and "(AI Engineer) AND locationSearch:(Hyderabad OR Secunderabad OR Bengaluru OR Bangalore OR Chennai)" in wipro_site.asked[-2], str(wipro_site.asked))
+check("Wipro: id, link without tracking, place, date", (first.get("job_id"), first.get("job_url"), first.get("location"), first.get("posted_time")) ==
+      ("wipro:1369349855", "https://careers.wipro.com/job/Bengaluru-Engineer-Python-Full-Stack-Development-IND-560035/1369349855/", "Bengaluru, India", "20 Nov 2026")
+      and first.get("title") == "Engineer - Python Full Stack Development" and core.location_is_eligible(first), str(first))
+check("Wipro: the feed supplies the text, so no job page is opened", "_detail" not in first and core.parse_experience_requirement(first) == (1.0, 3.0), first.get("description", ""))
+check("Wipro: a contract post is not full-time", len(wipro) == 3 and wipro[1]["title"] == "DEVELOPER L3(CONTRACT)" and not core.employment_is_eligible(wipro[1])
+      and core.employment_is_eligible(first), str([j["title"] for j in wipro]))
+check("Wipro: a place outside India stays as written and is refused", wipro[2]["location"] == "Warsaw, PL, 00-001" and not core.location_is_eligible(wipro[2]), wipro[2]["location"])
+ey = one(cp.read_ey(FakeSite({"careers.ey.com/services/rss/job/": FEED.replace("careers.wipro.com/job/", "careers.ey.com/ey/job/").replace("IND-29, IN", "KA, IN")})))
+check("EY: same feed, its own id and link", (ey.get("job_id"), ey.get("company"), ey.get("location")) == ("ey:1369349855", "EY", "Bengaluru, India")
+      and ey.get("job_url", "").startswith("https://careers.ey.com/ey/job/"), str(ey))
+class BrokenFeed:
+    """Stands in for cp.Site where the site answers a feed request with a web page."""
+
+    def fetch(self, url, params=None, accept="", data=None):
+        return argparse.Namespace(content=b"<html><body>Service unavailable<br></body></html>")
+
+
+try:
+    cp.Site.feed(BrokenFeed(), "https://careers.ey.com/services/rss/job/")
+    unreadable = ""
+except cp.PortalError as exc:
+    unreadable = str(exc)
+check("a feed that cannot be read is a site failure, not a crash", unreadable == "unreadable feed from https://careers.ey.com/services/rss/job/", unreadable)
+
+# LTIMindtree: a list that states the experience, and a job page for the text.
+ltim_site = FakeSite({
+    "candidatejobsearch": {"totalJobCount": 2, "jobVoList": [
+        {"jobSeq": "900911", "jobTitle": "Software Engineer", "jobReqExp": "1 - 3 Years", "locations": "Hyderabad, Kolkata"},
+        {"jobSeq": "904067", "jobTitle": "Software Engineer", "jobReqExp": "5 - 7 Years", "locations": "Hyderabad"}]},
+    "candidatejobdetail": {"jobVO": {"jobDesc": "<p>Build services in Python and Django.</p>", "jobSkills": "<b>Mandatory Skills : </b>Python, FastAPI<br/>",
+                                     "jobPostingDate": "07-Oct-2026", "jobTypeCustom3": "Permanent"}},
+})
+ltim = cp.read_ltimindtree(ltim_site)
+junior, senior = (ltim + [{}, {}])[:2]
+fill = junior.pop("_detail", None)
+check("LTIMindtree: one search per city spelling, one posting each", ltim_site.requests_made == 4 and len(ltim) == 2
+      and '"location": "Bangalore"' in ltim_site.posted[-1]["careerSiteUrlParams"], f"{ltim_site.requests_made} {len(ltim)}")
+check("LTIMindtree: id, places, link to the job", (junior.get("job_id"), junior.get("location")) == ("ltim:900911", "Hyderabad, Kolkata, India")
+      and junior.get("job_url", "").endswith("#detail/job/900911") and core.location_is_eligible(junior), str(junior))
+check("LTIMindtree: listed experience decides before the job page is opened", cp.listed_experience_excludes(senior, 2.0)
+      and not cp.listed_experience_excludes(junior, 2.0) and not cp.listed_experience_excludes(dict(junior, experience=""), 2.0))
+if fill:
+    fill(ltim_site, junior)
+check("LTIMindtree: the job page supplies text and date; the list supplies the experience", "Skills:\nMandatory Skills : Python, FastAPI" in junior.get("description", "")
+      and junior.get("posted_time") == "07-Oct-2026" and core.parse_experience_requirement(junior) == (1.0, 3.0) and core.employment_is_eligible(junior), str(junior))
+
+# Tech Mahindra: a search form, and a job page that opens only through the job's button.
+TECHM_FORM = '<form><input type="hidden" name="__VIEWSTATE" value="{state}"/><input type="text" name="ctl00$ContentPlaceHolder1$txtAdvanceSearch" value=""/>{cards}</form>'
+TECHM_CARDS = "".join(
+    f'<div><input type="hidden" name="ctl00$ContentPlaceHolder1$DataListRecommended$ctl0{n}$HdnJobCode" value="{code}"/><span>IT</span>'
+    f'<div>{title}</div><p><b>Skill Set</b> : Python<br/><b>Experience</b> : {years} Years<br/><b>Location</b> : {place}</p>'
+    f'<input type="submit" name="ctl00$ContentPlaceHolder1$DataListRecommended$ctl0{n}$btn_jobs" value="Apply/Shortlist"/></div>'
+    for n, (code, title, years, place) in enumerate([("102122", "Software Engineer", "2.00-4.00", "HYDERABAD"), ("101988", "Tech Lead", "7.00-10.00", "SAN JOSE")]))
+TECHM_JOB = ('<label id="ctl00_ContentPlaceHolder1_lblDesignationName">{title}</label><div class="job-details"><ul>'
+             '<li><b>Skill Set :</b><span>Python, Django</span></li><li><b>Total Experience :</b><span>2.00 to 4.00 Years</span></li>'
+             '<li><b>Job Post Date :</b><span>16/11/2026</span></li><li><b>Location :</b><span>HYDERABAD [India]</span></li>'
+             '<li><b>Job Reference No :</b><span>4118173</span></li></ul></div><div><h3>Job Summary</h3><p>Build REST APIs in Python.</p></div>')
+techm_pressed = []
+
+
+def techm_page(data):
+    if data is None:
+        return TECHM_FORM.format(state="home", cards="")
+    button = [name for name in data if name.endswith("btn_jobs")]
+    if button:
+        techm_pressed.append((button[0], data.get("__VIEWSTATE")))
+        return TECHM_FORM.format(state="results", cards=TECHM_CARDS) + "<script>window.open('JobDetails.aspx', '_blank');</script>"
+    return TECHM_FORM.format(state="results", cards=TECHM_CARDS)
+
+
+techm_site = FakeSite({"CurrentOpportunity.aspx": techm_page, "JobDetails.aspx": TECHM_JOB.format(title="Software Engineer")})
+techm = cp.read_tech_mahindra(techm_site)
+opening, abroad = (techm + [{}, {}])[:2]
+fill = opening.pop("_detail", None)
+check("Tech Mahindra: the search form is sent with the keyword", techm_site.posted and techm_site.posted[0].get("ctl00$ContentPlaceHolder1$txtAdvanceSearch") == "Python"
+      and techm_site.posted[0].get("__VIEWSTATE") == "home", str(techm_site.posted[:1]))
+check("Tech Mahindra: id, place and listed experience", (opening.get("job_id"), opening.get("location"), opening.get("experience")) ==
+      ("techm:102122", "Hyderabad", "2.00-4.00 Years") and core.location_is_eligible(opening) and not core.location_is_eligible(abroad)
+      and cp.listed_experience_excludes(abroad, 2.0) and not cp.listed_experience_excludes(opening, 2.0), str(opening))
+if fill:
+    fill(techm_site, opening)
+check("Tech Mahindra: the job's own button is pressed on its results page", techm_pressed == [("ctl00$ContentPlaceHolder1$DataListRecommended$ctl00$btn_jobs", "results")], str(techm_pressed))
+check("Tech Mahindra: the job page supplies text, place, date and the reference to search for", "Build REST APIs in Python." in opening.get("description", "")
+      and opening.get("location") == "Hyderabad, India" and opening.get("posted_time") == "16/11/2026"
+      and opening.get("freshness_badge") == "16/11/2026; search job reference 4118173 on the page"
+      and core.parse_experience_requirement(opening) == (2.0, 4.0), str(opening))
+other = dict(opening, title="Tech Lead", description="")
+try:
+    cp._techm_detail({}, "x$btn_jobs")(techm_site, other)
+    refused = False
+except cp.PortalError:
+    refused = True
+check("Tech Mahindra: a job page that is another job's is not used", refused and other["description"] == "")
+try:
+    cp._techm_detail({}, "x$btn_jobs")(FakeSite({"CurrentOpportunity.aspx": TECHM_FORM.format(state="results", cards=""), "JobDetails.aspx": TECHM_JOB.format(title="Tech Lead")}), other)
+    refused = False
+except cp.PortalError:
+    refused = True
+check("Tech Mahindra: no job page is read when the button did not open one", refused and other["description"] == "")
+
 check("the companies asked for are either read or named as not covered",
-      set(cp.PORTALS) == {"ntt", "amazon", "cognizant", "tiger", "infor", "jpmc", "capgemini"} and set(cp.NOT_COVERED) == {"EPAM", "Cimpress"})
+      set(cp.PORTALS) == {"ntt", "amazon", "cognizant", "tiger", "infor", "jpmc", "capgemini", "ltim", "ey", "techm", "wipro"}
+      and set(cp.NOT_COVERED) == {"EPAM", "Cimpress", "Sify", "Hetero"})
 
 
 # --- 4. a scan: what is mailed, and when ----------------------------------------------------------------
@@ -280,6 +406,20 @@ check("job pages: the opened posting is mailed", len(sent["mail"]) == 1 and "/jo
 opened.clear()
 code = scan()
 check("job pages: a page that came back empty is tried again; a judged one is not", opened == ["globex:303"] and not sent["mail"], str(opened))
+
+listings["globex"] = [
+    with_page(posting(310, key="globex", company="Globex", experience="5 - 7 Years"), f"We build with {STACK}"),
+    with_page(posting(311, key="globex", company="Globex", title="Backend Developer", experience="1 - 3 Years"), f"We build with {STACK}"),
+]
+opened.clear()
+code = scan()
+body = sent["mail"][0][1] if sent["mail"] else ""
+check("listed experience: a posting listed at 5-7 years is dropped without opening its page", opened == ["globex:311"], str(opened))
+check("listed experience: the one listed at 1-3 years is mailed in table 1", "/job/311" in body and "/job/310" not in body
+      and body.index("/job/311") < body.index("2. Experience not stated"), body[:200])
+opened.clear()
+code = scan()
+check("listed experience: the dropped posting is not looked at again", opened == [] and not sent["mail"], str(opened))
 
 cp.MAX_DETAIL_PAGES = 2
 opened.clear()

@@ -26,7 +26,7 @@ on:
         required: false
         default: '60'
       companies:
-        description: 'Optional comma-separated sites (ntt, amazon, cognizant, tiger, infor, jpmc, capgemini); empty = all'
+        description: 'Optional comma-separated sites (ntt, amazon, cognizant, tiger, infor, jpmc, capgemini, ltim, ey, techm, wipro); empty = all'
         required: false
         default: ''
       dry_run:
@@ -50,7 +50,8 @@ jobs:
   scan:
     name: Scan company career sites
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Eleven sites, each allowed 4 minutes at most (SITE_BUDGET_SECONDS); a usual run takes about 3.
+    timeout-minutes: 55
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -75,7 +76,7 @@ jobs:
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
 
       - name: Scan the career sites and mail what is new
-        timeout-minutes: 30
+        timeout-minutes: 48
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}

@@ -151,8 +151,16 @@ A third scan, beside the hourly report and the Hyderabad alert. Once an hour `co
 | Infor | careers.infor.com |
 | JPMorgan Chase | jpmc.fa.oraclecloud.com |
 | Capgemini | capgemini.com job search |
+| LTIMindtree (LTM) | ltm.ripplehire.com (their job board) |
+| EY | careers.ey.com job feed |
+| Tech Mahindra | careers.techmahindra.com |
+| Wipro | careers.wipro.com job feed |
 
-**Not covered:** EPAM (its India site hands a script only 10 of its roughly 340 jobs, in no date order) and Cimpress (its career site answers a script with an empty job list). Every mail repeats this, so the gap is not forgotten.
+**Not covered:** EPAM (its India site hands a script only 10 of its roughly 340 jobs, in no date order), Cimpress (its career site answers a script with an empty job list), Sify (its job board, sifycareer.tallite.com, answers only requests signed and encrypted by its own page) and Hetero (its job board, hetero.darwinbox.in, refuses a script with HTTP 403). Every mail repeats this, so the gap is not forgotten.
+
+**Tech Mahindra links.** A Tech Mahindra job has no link of its own, so its row links to the openings page and its "Posted" cell gives the job reference number: type that number into "Job Reference ID" on the page to open the job.
+
+**Experience listed beside the title.** LTIMindtree and Tech Mahindra show the years next to each title. A posting listed outside your years is dropped there, without opening its page; one listed inside them is opened, and its text must not ask for more.
 
 **The rule.** An opening is reported when it is in Hyderabad, Bengaluru or Chennai (or remote in India), is one of your roles, is full-time, and:
 
